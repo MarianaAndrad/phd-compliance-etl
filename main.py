@@ -9,8 +9,10 @@ if __name__ == "__main__":
     for file in os.listdir(data_folder):
         if file.endswith(".pdf"):
             input_file = os.path.join(data_folder, file)
-            output_file = os.path.join(data_output_folder, f"{os.path.splitext(file)[0]}.md")
+            output_file = os.path.join(data_output_folder, "01-markdown", f"{os.path.splitext(file)[0]}.md")
 
             text_result = convert_to_markdown(input_file)
             doc_metadata = extract_metadata(input_file)
             write_to_file(output_file, doc_metadata, text_result)
+
+

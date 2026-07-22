@@ -38,7 +38,7 @@ def write_to_file(file_path: str, metadata:dict, content: Any) -> None:
 
 if __name__ == "__main__":
     file = "../data/NIST.SP.800-53Ar5.pdf"
-    output_file = "./data-output/NIST.SP.800-53Ar5.md"
+    output_file = "./data-output/01-markdown/NIST.SP.800-53Ar5.md"
 
     text_result = convert_to_markdown(file)
     doc_metadata = extract_metadata(file)

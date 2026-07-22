@@ -224,8 +224,8 @@ __marimo__/
 data/*
 !data/.gitkeep
 
-data-output/markdown/*
-!data-output/markdown/.gitkeep
+data-output/01-markdown/*
+!data-output/01-markdown/.gitkeep
 
-data-output/cdm-instances/*
-!data-output/cdm-instances/.gitkeep
+data-output/02-cdm-instances/*
+!data-output/02-cdm-instances/.gitkeep
