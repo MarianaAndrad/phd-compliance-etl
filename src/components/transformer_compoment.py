@@ -1,18 +1,27 @@
-from typing import Dict, List, Tuple, Type, TypeVar
+import asyncio
+import logging
+import uuid
+from typing import List, Type, TypeVar
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, create_model, Field
 from tqdm import tqdm
 
-from llm import build_llm, build_structured_llm
+from dependencies.database import get_database
+from dependencies.llm import build_llm, build_structured_llm
 
-llm = build_llm() #TODO: CHANGE THIS TO GET TO THE SETTINGS
+logger = logging.getLogger(__name__)
+
+llm = build_llm()
 T = TypeVar("T", bound=BaseModel)
 
+TEST_COLLECTION_NAME = "transformer_test_controls"
+
 def load_document(path: str) -> str:
-    with open(path, "r") as f:
-         return f.read()
+    with open(path, "r") as file:
+         return file.read()
 
 def splitter_text() -> RecursiveCharacterTextSplitter:
     """Creates a RecursiveCharacterTextSplitter that splits on characters."""
@@ -23,14 +32,7 @@ def splitter_text() -> RecursiveCharacterTextSplitter:
     return splitter
 
 
-def extract_entities(document_text: str, schema: Type[T], key_fields: List[str] | None = None) -> List[T]:
-    """Splits `document_text` into chunks and extracts a list of `schema`
-    instances from each chunk via structured output (no manual JSON parsing).
-
-    `key_fields` are the natural-key field(s) of `schema` (e.g. ["slug"] or
-    ["ref_code"]) used to flag conflicting near-duplicate extractions. Pass
-    None to skip that check.
-    """
+def extract_entities(document_text: str, schema: Type[T]) -> List[T]:
     extraction_result = create_model(
         "ExtractionResult",
         items=(List[schema], ...),  # type: ignore[valid-type]  # schema is a runtime type, not a literal
@@ -51,17 +53,12 @@ def extract_entities(document_text: str, schema: Type[T], key_fields: List[str] 
         try:
             result = structured_llm.invoke([system_message, HumanMessage(content=chunk)])
         except Exception as e:
-            print(f"  [chunk parse failed] {e}")
+            logger.warning("Chunk parse failed: %s", e)
         if result is None:
-            print(f"  Skipping chunk after 5 failed attempts (chunk preview: {chunk[:120]!r}...)")
+            logger.warning("Skipping chunk after failed attempt (chunk preview: %r...)", chunk[:120])
             continue
 
-        for item in result.items:
-            errors = validate_required_fields(item) + validate_field_content(item)
-            if errors:
-                print(f"  [validation failed] {item!r}: {'; '.join(errors)}")
-                continue
-            all_results.append(item)
+        all_results.extend(result.items)
 
     seen = set()
     deduped_results: List[T] = []
@@ -71,80 +68,33 @@ def extract_entities(document_text: str, schema: Type[T], key_fields: List[str] 
             seen.add(key)
             deduped_results.append(item)
 
-    if key_fields:
-        for key, group in find_conflicting_duplicates(deduped_results, key_fields).items():
-            print(f"  [possible duplicate] {dict(zip(key_fields, key))}: {len(group)} conflicting extractions")
-
     return deduped_results
+
+# ---------------------------------------------------------------------------
+# Validation gates (AFTER extraction, BEFORE persistence)
+# ---------------------------------------------------------------------------
+# TODO IMPLEMENTED
+
 
 def save_result(file_path: str, result: T) -> None:
     with open(file_path, "w") as f:
         f.write(result.model_dump_json(indent=2))
 
-# ---------------------------------------------------------------------------
-# Validation gates
-# ---------------------------------------------------------------------------
-# Pydantic already guarantees each required field is present and has the
-# right Python type, but the LLM can still satisfy that with junk (blank
-# strings, placeholder text). These gates catch that before an item is
-# accepted into the results.
 
-PLACEHOLDER_VALUES = {
-    "n/a", "na", "none", "null", "unknown", "tbd",
-    "not specified", "not provided", "not mentioned", "not applicable",
-}
+async def persist_test_results(db: AsyncIOMotorDatabase, catalog_uuid: str, results: List[BaseModel]) -> None:
+    """Upserts extracted items into the test collection, keyed by (catalog_uuid, slug)."""
+    for result in results:
+        payload = result.model_dump()
+        await db[TEST_COLLECTION_NAME].update_one(
+            {"catalog_uuid": catalog_uuid, "slug": payload["slug"]},
+            {"$set": payload},
+            upsert=True,
+        )
 
 
-def validate_required_fields(item: T) -> List[str]:
-    """Flags required fields (per the pydantic schema) that are present but
-    effectively empty — blank/whitespace-only strings, empty lists/dicts —
-    which pydantic's required-field check does not catch on its own."""
-    errors = []
-    for name, field_info in type(item).model_fields.items():
-        if not field_info.is_required():
-            continue
-        value = getattr(item, name)
-        if value is None:
-            errors.append(f"'{name}' is required but missing")
-        elif isinstance(value, str) and not value.strip():
-            errors.append(f"'{name}' is required but empty")
-        elif isinstance(value, (list, dict)) and len(value) == 0:
-            errors.append(f"'{name}' is required but empty")
-    return errors
+async def main_test() -> None:
 
-
-def validate_field_content(item: T) -> List[str]:
-    """Flags string fields whose value is a placeholder the LLM sometimes
-    emits instead of leaving the field out (e.g. 'N/A', 'unknown'), i.e.
-    the field has the right *type* but not the right *type of information*."""
-    errors = []
-    for name, value in item.model_dump().items():
-        if isinstance(value, str) and value.strip().lower() in PLACEHOLDER_VALUES:
-            errors.append(f"'{name}' looks like a placeholder value: {value!r}")
-    return errors
-
-
-def find_conflicting_duplicates(items: List[T], key_fields: List[str]) -> Dict[Tuple, List[T]]:
-    """Groups items sharing the same `key_fields` (e.g. slug/ref_code) whose
-    full content still differs. Exact duplicates are already deduped by
-    `extract_entities`; this surfaces the remaining case where the model
-    extracted the *same* entity twice with conflicting details, so it can be
-    reviewed instead of silently kept as two records or silently merged."""
-    groups: Dict[Tuple, List[T]] = {}
-    for item in items:
-        dumped = item.model_dump()
-        key = tuple(dumped.get(field_name) for field_name in key_fields)
-        groups.setdefault(key, []).append(item)
-
-    return {
-        key: group
-        for key, group in groups.items()
-        if len(group) > 1 and len({item.model_dump_json() for item in group}) > 1
-    }
-
-if __name__ == "__main__":
-
-    class Control(BaseModel):
+    class ExtractedControl(BaseModel):
         ref_code: str = Field(
             ...,
             title="Reference Code",
@@ -173,29 +123,30 @@ if __name__ == "__main__":
             description="General description of the control.",
             min_length=1,
         )
-    # -----------------------------------------------------------------------
-    # Documento de exemplo (na prática, vem de um ficheiro .txt, .pdf, .docx...)
-    # -----------------------------------------------------------------------
-    document_path = "../data-output/01-markdown/NIST.SP.800-53r52.md"
+
+    document_path = "./data-output/01-markdown/NIST.SP.800-53r52.md"
+    output_file = "./data-output/02-cdm-instances/NIST.SP.800-53r52.v2.json"
     document_text = load_document(document_path)
-    document_text = document_text[20000:]
+    document_text = document_text[len(document_text)//2 - 10000:len(document_text)//2 + 10000]
 
+    results = extract_entities(document_text, ExtractedControl)
 
-    results = extract_entities(document_text, Control, key_fields=["slug"])
-
-    print("Resultado final:")
-    print("[")
+    logger.info("Results:")
     for control in results:
-        print(f"  {control.model_dump_json()},")
-    print("]")
+        logger.info("  %s,", control.model_dump_json())
 
+    catalog_uuid = str(uuid.uuid4())
+    async for db in get_database():
+        await persist_test_results(db, catalog_uuid, results)
 
-    ## SAVE this a document json please
-    with open("../data-output/02-cdm-instances/NIST.SP.800-53r52.json", "w") as f:
+    with open(output_file, "w") as f:
         f.write("[\n")
         for control in results:
             f.write(f"  {control.model_dump_json()},\n")
         f.write("]\n")
 
 
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(main_test())
 

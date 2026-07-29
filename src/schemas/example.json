@@ -1,0 +1,62 @@
+{
+	"catalog": {
+		"uuid": "92c27d42-5a83-2ad3-a142-1af89bc38c92",
+		"metadata": {
+			"type": "standard",
+			"name": "ISO 27002",
+			"version": "2022",
+			"language": "en",
+			"published": "2026-05-13T12:30:10.00000-00:00",
+			"last-modified": "2026-05-12T09:16:10.00000-00:00",
+			"publisher": "ISO",
+			"description": "This document specifies the (...)"
+		},
+		"groups": [
+			{
+				"catalog_uuid": "92c27d42-5a83-2ad3-a142-1af89bc38c92",
+				"ref_code": "8",
+				"title": "Technological controls",
+				"slug": "8-technological-controls",
+				"parent_slug": "",
+				"category": "technological control",
+				"description": "",
+				"purpose": "",
+				"guidance": "",
+				"other_information": "",
+				"means_of_verification": [],
+				"attributes": [],
+				"references": [],
+				"citer": "",
+				"groups": [
+					{
+						"catalog_uuid": "92c27d42-5a83-2ad3-a142-1af89bc38c92",
+						"ref_code": "8.13",
+						"title": "Information backup",
+						"slug": "8.13-information-backup",
+						"parent_slug": "8-technological-controls",
+						"category": "technological control",
+						"description": "Backup copies of information, software, and systems should be maintained and regularly tested in accordance with the agreed topic-specific policy on backup.",
+						"purpose": "To enable recovery from loss of data or systems.",
+						"guidance": "A topic-specific policy on backup should be established to address the organization's data retention and information security requirements.(...)",
+						"other_information": "For further information on storage security, including retention consideration, see ISO/IEC 27040.",
+						"means_of_verification": [
+							"Review backup policy documentation for defined retention periods and scope",
+							"Inspect backup logs to confirm scheduled backups completed successfully",
+							"Verify evidence of periodic restore tests and their results",
+							"Confirm backup storage location complies with security requirements (e.g. encryption, offsite/segregated storage)"
+						],
+						"attributes": [
+							{"control_type": ["preventive"] },
+							{"information_security_property": ["confidentiality", "integrity", "availability"] },
+							{"cybersecurity_concept": ["identify"] },
+							{"operational_capability": ["governance"] },
+							{"security_domain": ["governance_and_ecosystem", "resilience"] }
+						],
+						"references": [],
+						"citer": "nis2-4.2-backup-management"
+					}
+				]
+			}
+		]
+	}
+}

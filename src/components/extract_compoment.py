@@ -5,7 +5,7 @@ from pypdf import PdfReader
 
 converter: DocumentConverter = None
 
-def _get_converter():
+def _get_converter() -> DocumentConverter:
     global converter
     if converter is None:
         converter = DocumentConverter()
@@ -16,7 +16,7 @@ def convert_to_markdown(source_document: str) -> str:
     doc_content: str = result.document.export_to_markdown()
     return doc_content
 
-def extract_metadata(source_document: str):
+def extract_metadata(source_document: str) -> dict:
     reader = PdfReader(source_document)
     meta_document = reader.metadata
     metadata: dict = {

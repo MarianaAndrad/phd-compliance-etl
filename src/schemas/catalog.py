@@ -5,7 +5,7 @@ from typing import Annotated, List
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src.schemas.control import Control
+from schemas.control import Control
 
 
 class DocumentType(str, Enum):
