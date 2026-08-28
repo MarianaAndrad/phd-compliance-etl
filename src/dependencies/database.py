@@ -1,10 +1,13 @@
-from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import AsyncMongoClient
 
 from core.config import settings
 
-async def get_database():
-    client = AsyncIOMotorClient(settings.DATABASE_URI)
-    try:
-        yield client[settings.DB_MONGO_NAME]
-    finally:
-        client.close()
+MONGODB_CLIENT = None
+
+def get_db_client():
+    global MONGODB_CLIENT
+
+    if not MONGODB_CLIENT:
+        MONGODB_CLIENT = AsyncMongoClient(settings.DATABASE_URI)
+
+    return MONGODB_CLIENT

@@ -6,51 +6,11 @@ import asyncio
 
 from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
-from typing import List
+from typing import Dict
 from enum import Enum
 
-class ControlStates(Enum):
-    NONE  = 0
-    START = 1
-    DESCRIPTION = 2
-    PURPOSE = 3
-    GUIDANCE = 4
-    OTHER_INFORMATION = 5
-    MEANS_OF_VERIFICATION = 6
-    ATTRIBUTES = 7
-
-class MetadataModel(BaseModel):
-    type: str
-    name: str
-    version: str | None = Field(default=None)
-    language: str = Field(default="en")
-    published: str | None = Field(default=None)
-    last_modified: str | None = Field(default=None, alias="last-modified")
-    publisher: str
-    description: str | None = Field(default=None)
-
-class CatalogModel(BaseModel):
-    uuid: str = Field(default_factory=lambda: str(uuid4()))
-    metadata: MetadataModel
-    #groups: List[ControlModel] | None = Field(default=None) # uncessary, should be known through the catalog_uuid of each control
-
-class ControlModel(BaseModel):
-    model_config = ConfigDict(validate_assignment=True) # make pydantic validate fields when assigning after model creation (by default they are only validated on instantiation)
-
-    catalog_uuid: str | None = Field(default=None)
-    ref_code: str
-    title: str
-    slug: str
-    parent_slug: str | None = Field(default=None)
-    category: str
-    description: str = Field(default="")
-    purpose: str = Field(default="")
-    guidance: str = Field(default="")
-    other_information: str = Field(default="")
-    means_of_verifiction: List[str] = Field(default=[])
-    attributes: List[str] = Field(default=[])
-    citer: str | None = Field(default=None)
-    #groups: List[ControlModel] = Field(default=[]) # uncessary, should be known through the parent_slug of each control
+from schemas.catalog import CatalogModel, MetadataModel
+from schemas.control import ControlModel
 
 
 def UTIL_string_append(dest, source):
@@ -70,7 +30,18 @@ def UTIL_get_control_lvl(control):
     return None
 
 
-# NOTE: Metadata specifically for the ISO 27002 standard, needs to be adapted for other norms
+class ControlStates(Enum):
+    NONE  = 0
+    START = 1
+    DESCRIPTION = 2
+    PURPOSE = 3
+    GUIDANCE = 4
+    OTHER_INFORMATION = 5
+    MEANS_OF_VERIFICATION = 6
+    ATTRIBUTES = 7
+
+
+# NOTE: Sequence conditions specifically for the ISO 27002 standard, needs to be adapted for other norms
 G_FRAMEWORK_SEQUENCE_STATE_CONDITIONS = {
     "doc_start_controls": lambda line: "## 5 Organizational controls".lower() in line.lower(),
     "doc_end_controls": lambda line: "## A.1	 General".lower() in line.lower(),
@@ -87,7 +58,7 @@ G_FRAMEWORK_SEQUENCE_STATE_CONDITIONS = {
 
 
 # state machine parser function
-def parse_md(md_path) -> List[ControlModel]:
+def parse_md(md_path: str, catalog_metadata: str) -> Dict:
     global G_FRAMEWORK_SEQUENCE_STATE_CONDITIONS
     
     b_control_start = False
@@ -120,6 +91,15 @@ def parse_md(md_path) -> List[ControlModel]:
             controls_list.append(cur_control)
             cur_control = None
 
+    catalog = CatalogModel(
+        uuid=str(uuid4()),
+        metadata=MetadataModel(
+            type=catalog_metadata["type"],
+            name=catalog_metadata["name"],
+            publisher=catalog_metadata["publisher"]
+        )
+    )
+
     with open(md_path, "r", encoding="utf-8") as file:
         for line in file:
             line = line.strip()
@@ -144,15 +124,14 @@ def parse_md(md_path) -> List[ControlModel]:
 
                     #print("ENTERED CONTROL: " + line + " | control = " + cur_ref_code.group(0) + ", title = '" + line[cur_ref_code.end() + 1:] + "'")
                     cur_control = ControlModel(
-                        ref_code = cur_ref_code.group(0),
-                        title = line[cur_ref_code.end() + 1:],
-                        slug = cur_ref_code.group(0) + "-" + '-'.join(line[cur_ref_code.end() + 1:].lower().split()),
-                        category = parent_controls[1].title if 1 in parent_controls else line[cur_ref_code.end() + 1:]
+                        catalog_uuid=catalog.uuid,
+                        ref_code=cur_ref_code.group(0),
+                        title=line[cur_ref_code.end() + 1:],
+                        slug=cur_ref_code.group(0) + "-" + '-'.join(line[cur_ref_code.end() + 1:].lower().split()),
+                        category=parent_controls[1].title if 1 in parent_controls else line[cur_ref_code.end() + 1:]
                     )
 
                     #print(cur_ref_code.group(0), "->", get_cur_control_lvl())
-
-                # TODO: improve state machine functioning, "sequence_state_conditions"'s values should be functions that directly return whether we are on that sequence state
 
                 # control description
                 elif G_FRAMEWORK_SEQUENCE_STATE_CONDITIONS["control_description"](line):
@@ -202,102 +181,19 @@ def parse_md(md_path) -> List[ControlModel]:
         print(control.model_dump_json(indent=2))
         #print(control.ref_code, " -> ", control.parent_slug)
 
-    return controls_list
+    return { "catalog": catalog, "controls_list": controls_list }
 
 
-def dump_cdm_instances(file_path: str, controls_list: List[ControlModel]) -> None:
-    with open(file_path, "w") as f:
-        json.dump([control.model_dump() for control in controls_list], f, indent=2)
+def dump_cdm_instances(file_path: str, cdm_instances: Dict) -> None:
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "catalog": cdm_instances["catalog"].model_dump(),
+            "controls_list": [control.model_dump() for control in cdm_instances["controls_list"]]
+            },
+        f, indent=2)
 
 
-###############################################################
-from pymongo import AsyncMongoClient
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import model_validator
-
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        env_ignore_empty=True,
-    )
-    # Database - MONGO
-    MONGO_HOST: str = "localhost"
-    MONGO_PORT: str = "27017"
-    DB_MONGO_USERNAME: str = "root"
-    DB_MONGO_PASSWORD: str = "root"
-    DB_MONGO_NAME: str = "test"
-
-    DATABASE_URI: str = ""
-
-    @model_validator(mode="after")
-    def _build_database_uri(self) -> "Settings":
-        if not self.DATABASE_URI:
-            self.DATABASE_URI = (
-                f"mongodb://{self.DB_MONGO_USERNAME}:{self.DB_MONGO_PASSWORD}"
-                f"@{self.MONGO_HOST}:{self.MONGO_PORT}/{self.DB_MONGO_NAME}"
-            )
-            print(f"Database URI built: {self.DATABASE_URI}")
-        return self
-
-    ## Collections
-    DB_MONGO_CATALOGS_COLLECTION: str = "catalogs"
-    DB_MONGO_CONTROLS_COLLECTION: str = "controls"
-settings = Settings()
-
-mongodb_client = AsyncMongoClient(settings.DATABASE_URI)
-
-
-DB_NAME = "complianceETL"
-FRAMEWORK_NAME = "iso27002"
-
-
-async def persist_catalog(framework_name: str) -> None:
-    #print(mongodb_client[DB_NAME].get_collection(TEST_COLLECTION_NAME))
-
-    catalog = await mongodb_client[DB_NAME].get_collection(settings.DB_MONGO_CATALOGS_COLLECTION).find_one(
-        { "metadata.name": framework_name }
-    )
-    #print(catalog)
-
-    if catalog is None:
-        metadata = MetadataModel(
-            type="standard",
-            name=framework_name,
-            publisher="ISO/IEC"
-        )
-        catalog = CatalogModel(
-            uuid=str(uuid4()),
-            metadata=metadata
-        )
-
-        result = await mongodb_client[DB_NAME].get_collection(settings.DB_MONGO_CATALOGS_COLLECTION).insert_one(catalog.model_dump())
-    else:
-        catalog = CatalogModel(**catalog) # create pydantic model instance from raw python dict
-
-    return catalog.uuid
-
-
-async def persist_controls(catalog_uuid: str, controls_list: List[ControlModel]) -> None:
-    """Upserts each control, keyed by (catalog_uuid, slug) so re-running the
-    extraction on the same document does not create duplicates."""
-
-    for control in controls_list:
-        if not control.catalog_uuid:
-            control.catalog_uuid = catalog_uuid
-        payload = control.model_dump()
-        await mongodb_client[DB_NAME].get_collection(settings.DB_MONGO_CONTROLS_COLLECTION).update_one(
-            {"slug": payload["slug"]}, #{"catalog_uuid": catalog_uuid, "slug": payload["slug"]},
-            {"$set": payload},
-            upsert=True,
-        )
-    
-
-async def persist_data(controls_list):
-    catalog_uuid = await persist_catalog(FRAMEWORK_NAME)
-    await persist_controls(catalog_uuid, controls_list)
-###############################################################
 
 if __name__ == "__main__":
     document_path = "./data-output/01-markdown/i.s.eniso-iec27002-2022-v2.00_pdf.md"
@@ -306,6 +202,4 @@ if __name__ == "__main__":
     controls_list = parse_md(document_path)
     dump_cdm_instances(output_file, controls_list)
 
-    # TODO: test saving to mongoDB, update and use functions from load_component file, try not to use the "motor" package
-
-    asyncio.run(persist_data(controls_list))
+    #asyncio.run(persist_data(controls_list))
