@@ -11,7 +11,74 @@ def _get_converter() -> DocumentConverter:
         converter = DocumentConverter()
     return converter
 
+import pymupdf
+
+def redact_doc(source_document: str) -> None:
+    doc = pymupdf.open(source_document)
+
+    redact_phrases = []
+
+    #page = doc.load_page(1)
+    for page in doc:
+        draft = []
+
+        for phrase in redact_phrases:
+            draft.extend(page.search_for(phrase))
+            #print(draft)
+
+        # redact given phrases
+        for rect in draft:
+            margin_x = 1.0  # points
+            margin_y = 0.5
+
+            smaller_rect = pymupdf.Rect(
+                rect.x0 + margin_x,
+                rect.y0 + margin_y,
+                rect.x1 - margin_x,
+                rect.y1 - margin_y
+            )
+            #annot = page.add_redact_annot(rect)
+
+            annot = page.add_redact_annot(smaller_rect)
+            page.apply_redactions()
+
+        # redact header and footer
+        header_end = page.rect.height * 0.05
+        header_rect = pymupdf.Rect(
+            0,
+            0,
+            page.rect.width,
+            header_end
+        )
+        page.add_redact_annot(header_rect)
+
+        footer_start = page.rect.height * 0.97
+        footer_rect = pymupdf.Rect(
+            0,
+            footer_start,
+            page.rect.width,
+            page.rect.height
+        )
+        page.add_redact_annot(footer_rect)
+
+        # apply redactions
+        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE)
+
+    redacted_path = source_document.split("/")
+    redacted_path.insert(-1, "redacted")
+    redacted_path = '/'.join(redacted_path)
+
+    from pathlib import Path
+    Path(redacted_path).parent.mkdir(parents=True, exist_ok=True)
+
+    # save the doc to a new PDF
+    doc.save(redacted_path, garbage=3, deflate=True)
+
+    return redacted_path
+
 def convert_to_markdown(source_document: str) -> str:
+    source_document = redact_doc(source_document)
+    
     result = _get_converter().convert(source_document)
     doc_content: str = result.document.export_to_markdown()
     return doc_content
@@ -32,7 +99,7 @@ def extract_metadata(source_document: str) -> dict:
 def write_to_file(file_path: str, metadata:dict, content: Any) -> None:
     header_line = [f"{chave}: {valor}" for chave, valor in metadata.items()]
     header = "---\n" + "\n".join(header_line) + "\n---\n\n"
-    with open(file_path, "w") as file:
+    with open(file_path, "w", encoding="utf-8") as file:
         file.write(header)
         file.write(content)
 
