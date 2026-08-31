@@ -14,11 +14,17 @@ from schemas.control import ControlModel
 
 
 def UTIL_string_append(dest, source):
-    if dest and dest[-1] != "\n":
-        if (dest[-1] in ".;:!?|") or ('|' in source): # NOTE: The second condition is used to fix a case in ISO 27002 parsing (transition between Table 1 title and its contents)
-            dest += "\n"
-        elif dest[-1] != " ":
-            dest += " "
+    if dest and dest[-1] != '\n' and dest[-1] != ' ':
+        dest += '\n'
+
+    if source and source[0].islower():
+        if dest and dest[-1] == '\n':
+            dest = dest[:-1] + ' '
+        elif dest and dest[-1] != ' ':
+            dest += ' '
+
+    if "<!-- PAGE_BREAK -->" in source:
+        return dest
     
     return dest + source
 
@@ -42,24 +48,53 @@ class ControlStates(Enum):
 
 
 # NOTE: Sequence conditions specifically for the ISO 27002 standard, needs to be adapted for other norms
-G_FRAMEWORK_SEQUENCE_STATE_CONDITIONS = {
-    "doc_start_controls": lambda line: "## 5 Organizational controls".lower() in line.lower(),
-    "doc_end_controls": lambda line: "## A.1	 General".lower() in line.lower(),
+G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
+    "iso27001": {
+        "doc_start_controls": lambda line: "## 4 Context of the organization".lower() in line.lower(),
+        "doc_end_controls": lambda line: "## Annex A".lower() in line.lower(),
 
-    "new_control": lambda line: re.search(r"^##\s+\d+", line), #"^##\\s+\\d+"
-    
-    "control_description": lambda line: "## Control".lower() in line.lower(),
-    "control_purpose": lambda line: "## Purpose".lower() in line.lower(),
-    "control_guidance": lambda line: "## Guidance".lower() in line.lower(),
-    "control_other_information": lambda line: "## Other information".lower() in line.lower(),
-    "control_means_of_verification": lambda line: "## Means of verification".lower() in line.lower(),
-    "control_attributes": lambda line: "## Attributes".lower() in line.lower()
+        "new_control": lambda line: re.search(r"^##\s+\d+", line), #"^##\\s+\\d+"
+        
+        "control_description": lambda line: re.search(r"^##\s+\d+", line),
+        "control_purpose": lambda line: False,
+        "control_guidance": lambda line: False,
+        "control_other_information": lambda line: False,
+        "control_means_of_verification": lambda line: False,
+        "control_attributes": lambda line: False
+    },
+    "iso27002": {
+        "doc_start_controls": lambda line: "## 5 Organizational controls".lower() in line.lower(),
+        "doc_end_controls": lambda line: "## A.1	 General".lower() in line.lower(),
+
+        "new_control": lambda line: re.search(r"^##\s+\d+", line), #"^##\\s+\\d+"
+        
+        "control_description": lambda line: "## Control".lower() in line.lower(),
+        "control_purpose": lambda line: "## Purpose".lower() in line.lower(),
+        "control_guidance": lambda line: "## Guidance".lower() in line.lower(),
+        "control_other_information": lambda line: "## Other information".lower() in line.lower(),
+        "control_means_of_verification": lambda line: "## Means of verification".lower() in line.lower(),
+        "control_attributes": lambda line: re.search(r"^##\s+\d+", line)#lambda line: "## Attributes".lower() in line.lower()
+    },
+    "iso27005": {
+        "doc_start_controls": lambda line: "## 5 Information security risk management".lower() in line.lower(),
+        "doc_end_controls": lambda line: "## Annex A".lower() in line.lower(),
+
+        "new_control": lambda line: re.search(r"^##\s+\d+", line), #"^##\\s+\\d+"
+        
+        "control_description": lambda line: re.search(r"^##\s+\d+", line),
+        "control_purpose": lambda line: False,
+        "control_guidance": lambda line: False,
+        "control_other_information": lambda line: False,
+        "control_means_of_verification": lambda line: False,
+        "control_attributes": lambda line: False
+    },
 }
 
 
 # state machine parser function
-def parse_md(md_path: str, catalog_metadata: str) -> Dict:
-    global G_FRAMEWORK_SEQUENCE_STATE_CONDITIONS
+def parse_md(md_path: str, framework_details: dict) -> Dict:
+    global G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS
+    SEQUENCE_STATE_CONDITIONS = G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS[framework_details["name"]]
     
     b_control_start = False
     control_state = ControlStates.NONE
@@ -72,13 +107,13 @@ def parse_md(md_path: str, catalog_metadata: str) -> Dict:
         nonlocal cur_control # avoid python treating cur_control as a local function variable when we assign cur_control some value inside this function
         
         if cur_control is not None:
-            if cur_control.description and cur_control.description[-1] == "\n":
+            if cur_control.description and cur_control.description[-1] in ['\n', ' ']:
                 cur_control.description = cur_control.description[:-1]
-            if cur_control.purpose and cur_control.purpose[-1] == "\n":
+            if cur_control.purpose and cur_control.purpose[-1] in ['\n', ' ']:
                 cur_control.purpose = cur_control.purpose[:-1]
-            if cur_control.guidance and cur_control.guidance[-1] == "\n":
+            if cur_control.guidance and cur_control.guidance[-1] in ['\n', ' ']:
                 cur_control.guidance = cur_control.guidance[:-1]
-            if cur_control.other_information and cur_control.other_information[-1] == "\n":
+            if cur_control.other_information and cur_control.other_information[-1] in ['\n', ' ']:
                 cur_control.other_information = cur_control.other_information[:-1]
 
             # level 1 controls are root parents
@@ -94,9 +129,9 @@ def parse_md(md_path: str, catalog_metadata: str) -> Dict:
     catalog = CatalogModel(
         uuid=str(uuid4()),
         metadata=MetadataModel(
-            type=catalog_metadata["type"],
-            name=catalog_metadata["name"],
-            publisher=catalog_metadata["publisher"]
+            type=framework_details["type"],
+            name=framework_details["name"],
+            publisher=framework_details["publisher"]
         )
     )
 
@@ -104,18 +139,18 @@ def parse_md(md_path: str, catalog_metadata: str) -> Dict:
         for line in file:
             line = line.strip()
 
-            if G_FRAMEWORK_SEQUENCE_STATE_CONDITIONS["doc_start_controls"](line):
+            if SEQUENCE_STATE_CONDITIONS["doc_start_controls"](line):
                 b_control_start = True
 
             if b_control_start:
                 # end of controls sequence, insert last filled control
-                if G_FRAMEWORK_SEQUENCE_STATE_CONDITIONS["doc_end_controls"](line):
+                if SEQUENCE_STATE_CONDITIONS["doc_end_controls"](line):
                     control_state = ControlStates.NONE
                     #b_control_start = False
                     _add_cur_control()
 
                 # new control
-                elif G_FRAMEWORK_SEQUENCE_STATE_CONDITIONS["new_control"](line):
+                elif SEQUENCE_STATE_CONDITIONS["new_control"](line):
                     control_state = ControlStates.START
                     _add_cur_control()
 
@@ -133,22 +168,21 @@ def parse_md(md_path: str, catalog_metadata: str) -> Dict:
 
                     #print(cur_ref_code.group(0), "->", get_cur_control_lvl())
 
+                # control attributes
+                if SEQUENCE_STATE_CONDITIONS["control_attributes"](line):
+                    control_state = ControlStates.ATTRIBUTES; continue
                 # control description
-                elif G_FRAMEWORK_SEQUENCE_STATE_CONDITIONS["control_description"](line):
+                elif SEQUENCE_STATE_CONDITIONS["control_description"](line):
                     control_state = ControlStates.DESCRIPTION; continue
                 # control purpose
-                elif G_FRAMEWORK_SEQUENCE_STATE_CONDITIONS["control_purpose"](line):
+                elif SEQUENCE_STATE_CONDITIONS["control_purpose"](line):
                     control_state = ControlStates.PURPOSE; continue
                 # control guidance
-                elif G_FRAMEWORK_SEQUENCE_STATE_CONDITIONS["control_guidance"](line):
+                elif SEQUENCE_STATE_CONDITIONS["control_guidance"](line):
                     control_state = ControlStates.GUIDANCE; continue
                 # other information
-                elif G_FRAMEWORK_SEQUENCE_STATE_CONDITIONS["control_other_information"](line):
+                elif SEQUENCE_STATE_CONDITIONS["control_other_information"](line):
                     control_state = ControlStates.OTHER_INFORMATION; continue
-
-                # skip random unknown control sequences
-                if line.startswith("#"): #re.search(r"^#+", line):
-                    continue
 
                 line = line.replace("\u00A0", " ") # replace non-breaking spaces with normal spaces
                 if any(ord(char) > 127 for char in line): # ignore lines containing non ascii chars
@@ -160,8 +194,26 @@ def parse_md(md_path: str, catalog_metadata: str) -> Dict:
 
                 line = ' '.join(line.split()) # convert multi spacings to single spacing
 
+                # control attributes
+                if control_state == ControlStates.ATTRIBUTES:
+                    if "<!-- PAGE_BREAK -->" in line:
+                        continue
+                    #print("In ATTRIBUTES state:", line)
+                    tags = [k.strip().lower() for k in line.split('|') if k != '' and any(char.isalpha() or char.isdigit() for char in k)]
+
+                    # reading attribute keys (table header for ISOs)
+                    if len(cur_control.attributes) == 0:
+                        cur_control.attributes = [{'_'.join(k.split(' ')): []} for k in tags]
+                    # reading attribute values (table body for ISOs)
+                    elif len(tags) > 0:
+                        ind = 0
+                        for attrs in tags:
+                            attrs = [re.sub(r"[ -]", "", a) for a in attrs.split('#') if a != '']
+                            next(iter(cur_control.attributes[ind].values())).extend(attrs)
+                            ind += 1
+                    #print(cur_control.attributes)
                 # control description
-                if control_state == ControlStates.DESCRIPTION:
+                elif control_state == ControlStates.DESCRIPTION:
                     #print("CONTROL", cur_control.ref_code, "DESCRIPTION:", line)
                     cur_control.description = UTIL_string_append(cur_control.description, line)
                 # control purpose
@@ -177,8 +229,8 @@ def parse_md(md_path: str, catalog_metadata: str) -> Dict:
     if cur_control and cur_control not in controls_list:
         _add_cur_control()
 
-    for control in controls_list:
-        print(control.model_dump_json(indent=2))
+    #for control in controls_list:
+        #print(control.model_dump_json(indent=2))
         #print(control.ref_code, " -> ", control.parent_slug)
 
     return { "catalog": catalog, "controls_list": controls_list }

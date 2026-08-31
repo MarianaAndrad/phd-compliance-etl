@@ -13,10 +13,8 @@ def _get_converter() -> DocumentConverter:
 
 import pymupdf
 
-def redact_doc(source_document: str) -> None:
+def redact_doc(source_document: str, redact_phrases: list) -> None:
     doc = pymupdf.open(source_document)
-
-    redact_phrases = []
 
     #page = doc.load_page(1)
     for page in doc:
@@ -40,7 +38,7 @@ def redact_doc(source_document: str) -> None:
             #annot = page.add_redact_annot(rect)
 
             annot = page.add_redact_annot(smaller_rect)
-            page.apply_redactions()
+            #page.apply_redactions()
 
         # redact header and footer
         header_end = page.rect.height * 0.05
@@ -52,7 +50,7 @@ def redact_doc(source_document: str) -> None:
         )
         page.add_redact_annot(header_rect)
 
-        footer_start = page.rect.height * 0.97
+        footer_start = page.rect.height * 0.965
         footer_rect = pymupdf.Rect(
             0,
             footer_start,
@@ -76,11 +74,20 @@ def redact_doc(source_document: str) -> None:
 
     return redacted_path
 
-def convert_to_markdown(source_document: str) -> str:
-    source_document = redact_doc(source_document)
+def convert_to_markdown(source_document: str, file_props: dict) -> str:
+    if file_props["redact_phrases"]:
+        source_document = redact_doc(source_document, file_props["redact_phrases"])
     
-    result = _get_converter().convert(source_document)
-    doc_content: str = result.document.export_to_markdown()
+    result = _get_converter().convert(source_document)#, page_range=(5, len(PdfReader(source_document).pages))
+    doc_content: str = result.document.export_to_markdown(page_break_placeholder="<!-- PAGE_BREAK -->")
+
+    '''for item, level in result.document.iterate_items():
+        print(
+            item.label,
+            repr(item.text if hasattr(item, "text") else ""),
+            item.prov
+        )
+    return'''
     return doc_content
 
 def extract_metadata(source_document: str) -> dict:
