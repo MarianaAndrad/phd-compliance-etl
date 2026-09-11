@@ -13,15 +13,54 @@ from schemas.catalog import CatalogModel, MetadataModel
 from schemas.control import ControlModel
 
 
+def UTIL_is_phrase_continuity(prev_str, next_str):
+    prev_str_last_word = prev_str.split()
+    next_str_first_word = next_str.split()
+
+    if not prev_str_last_word or not next_str_first_word:
+        return True
+
+    # NOTE: Fix missing "\n" case: "(...) the value for the assignment operation can be \"none.\"\nRelated Controls: AC-8, IA-2, PL-2."
+    if prev_str_last_word[-1][-1] == '"' and (next_str_first_word[0][0].isupper() and not next_str_first_word[0].isupper()):
+        return False
+
+    return True
+
+def UTIL_is_list_item_start(strg):
+    return (not not re.match(r"\((?:[a-z]|\d+)\)\s+", strg)) or (not not re.match(r"(?:[a-z]|\d+)\.\s+", strg))
+
+G_IN_ITEM_LIST = False
+def UTIL_update_text_state(strg):
+    global G_IN_ITEM_LIST
+    if UTIL_is_list_item_start(strg):
+        G_IN_ITEM_LIST = True
+    elif strg.strip() and strg.strip()[-1] == '.':
+        G_IN_ITEM_LIST = False
+
 def UTIL_string_append(dest, source):
-    if dest and dest[-1] != '\n' and dest[-1] != ' ':
+    """if dest and dest[-1] != '\n' and dest[-1] != ' ':
         dest += '\n'
 
     if source and source[0].islower():
         if dest and dest[-1] == '\n':
             dest = dest[:-1] + ' '
         elif dest and dest[-1] != ' ':
+            dest += ' '"""
+    
+    end_punctuation = "!.:;?"
+    if (
+        ((source and source[0].islower()) or (dest and dest[-1] != '\n' and dest[-1] not in end_punctuation)) and
+        dest.split('\n')[-1].isupper() == source.isupper() and
+        not UTIL_is_list_item_start(source) and
+        UTIL_is_phrase_continuity(dest, source)
+        ):
+        if dest and dest[-1] != ' ':
             dest += ' '
+    else:
+        if dest and dest[-1] != '\n':
+            dest += '\n'
+
+    UTIL_update_text_state(source)
 
     if "<!-- PAGE_BREAK -->" in source:
         return dest
@@ -29,11 +68,41 @@ def UTIL_string_append(dest, source):
     return dest + source
 
 
-def UTIL_get_control_lvl(control):
+G_BASE_CONTROL_DELIMITER_COUNT = None
+def UTIL_get_control_lvl(control, control_levels):
+    global G_BASE_CONTROL_DELIMITER_COUNT
+
+    if isinstance(control, ControlModel):
+        ref_code = control.ref_code
+    elif isinstance(control, str):
+        ref_code = control
+
+    if control_levels is not None:
+        for k, v in control_levels.items():
+            if v(ref_code):
+                if G_BASE_CONTROL_DELIMITER_COUNT is None:
+                    G_BASE_CONTROL_DELIMITER_COUNT = k
+                return k
+
+    control_delimiters = ".-"
+
+    # register the base control delimiter count according to the first analyzed control
+    if G_BASE_CONTROL_DELIMITER_COUNT is None:
+        G_BASE_CONTROL_DELIMITER_COUNT = sum(ref_code.count(c) for c in control_delimiters)
+
     if control is not None:
-        return control.ref_code.count(".") + 1
+        return sum(ref_code.count(c) for c in control_delimiters) + 1 - G_BASE_CONTROL_DELIMITER_COUNT
 
     return None
+
+
+def UTIL_regex_str_match(regex, str):
+    match = re.search(regex, str)
+
+    if isinstance(match, re.Match):
+        return match.group(0)
+
+    return ''
 
 
 class ControlStates(Enum):
@@ -47,7 +116,7 @@ class ControlStates(Enum):
     ATTRIBUTES = 7
 
 
-# NOTE: Sequence conditions specifically for the ISO 27002 standard, needs to be adapted for other norms
+# TODO: Move to own file?
 G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
     "iso27001": {
         "doc_start_controls": lambda line: "## 4 Context of the organization".lower() in line.lower(),
@@ -60,7 +129,7 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
         "control_guidance": lambda line: False,
         "control_other_information": lambda line: False,
         "control_means_of_verification": lambda line: False,
-        "control_attributes": lambda line: False
+        "control_attributes": lambda line: False,
     },
     "iso27002": {
         "doc_start_controls": lambda line: "## 5 Organizational controls".lower() in line.lower(),
@@ -68,12 +137,19 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
 
         "new_control": lambda line: re.search(r"^##\s+\d+", line), #"^##\\s+\\d+"
         
-        "control_description": lambda line: "## Control".lower() in line.lower(),
-        "control_purpose": lambda line: "## Purpose".lower() in line.lower(),
-        "control_guidance": lambda line: "## Guidance".lower() in line.lower(),
-        "control_other_information": lambda line: "## Other information".lower() in line.lower(),
-        "control_means_of_verification": lambda line: "## Means of verification".lower() in line.lower(),
-        "control_attributes": lambda line: re.search(r"^##\s+\d+", line)#lambda line: "## Attributes".lower() in line.lower()
+        "control_description": lambda line: { "val": "## Control".lower() in line.lower(), "skip_line": True },
+        "control_purpose": lambda line: { "val": "## Purpose".lower() in line.lower(), "skip_line": True },
+        "control_guidance": lambda line: { "val": "## Guidance".lower() in line.lower(), "skip_line": True },
+        "control_other_information": lambda line: { "val": "## Other information".lower() in line.lower(), "skip_line": True },
+        "control_means_of_verification": lambda line: { "val": "## Means of verification".lower() in line.lower(), "skip_line": True },
+        "control_attributes": lambda line: { "val": re.search(r"^##\s+\d+", line), "skip_line": True },
+
+        #control construct function
+        "construct_control": lambda line: (
+            (cur_ref_code := re.search(r"\d+(:?\.\d+)*", line)),
+            (cur_title := line[cur_ref_code.end() + 1:]),
+            (cur_slug := cur_ref_code.group(0) + "-" + '-'.join(cur_title.lower().split()))
+        )
     },
     "iso27005": {
         "doc_start_controls": lambda line: "## 5 Information security risk management".lower() in line.lower(),
@@ -86,8 +162,61 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
         "control_guidance": lambda line: False,
         "control_other_information": lambda line: False,
         "control_means_of_verification": lambda line: False,
-        "control_attributes": lambda line: False
+        "control_attributes": lambda line: False,
     },
+    "nistcsf": {
+        "doc_start_controls": lambda line: "GOVERN (GV):".lower() in line.lower(),
+        "doc_end_controls": lambda line: "## Appendix B. CSF Tiers".lower() in line.lower(),
+
+        "new_control": lambda line: re.search(r"[A-Z][A-Za-z ,]+\([A-Za-z]{2}(\.[A-Z]{2})?\)", line) or re.search(r"[A-Z]{2}\.[A-Z]{2}(-[0-9]{2})?", line),
+        
+        "control_description": lambda line: { "val": re.search(r"[A-Z][A-Za-z ,]+\([A-Za-z]{2}(\.[A-Z]{2})?\)", line) or re.search(r"[A-Z]{2}\.[A-Z]{2}(-[0-9]{2})?", line), "skip_line": False },
+        "control_purpose": lambda line: { "val": False, "skip_line": True },
+        "control_guidance": lambda line: { "val": False, "skip_line": True },
+        "control_other_information": lambda line: { "val": False, "skip_line": True },
+        "control_means_of_verification": lambda line: { "val": False, "skip_line": True },
+        "control_attributes": lambda line: { "val": False, "skip_line": True },
+
+        #control construct function
+        "construct_control": lambda line: (
+            (cur_ref_code := cur_title.split('(')[1].replace(')', '')),
+            (cur_title := cur_title.split('(')[0].strip()),
+            (cur_slug := cur_ref_code.lower() + "-" + '-'.join(cur_title.lower().split()).replace(',', ''))
+        )
+        if ('(' in (cur_title := UTIL_regex_str_match(r"[A-Z][A-Za-z ,]+\([A-Za-z]{2}(\.[A-Z]{2})?\)", line)))
+        else (
+            (cur_ref_code := re.search(r"[A-Z]{2}\.[A-Z]{2}(-[0-9]{2})?", line)),
+            (cur_title := cur_ref_code.group(0)),
+            (cur_slug := cur_ref_code.group(0).lower())
+        )
+    },
+    "nistsp800-53r5": {
+        "doc_start_controls": lambda line: line.lower().strip() == "3.1   ACCESS CONTROL".lower().strip(),
+        "doc_end_controls": lambda line: line.startswith("REFERENCES"),
+
+        "new_control": lambda line: re.match(r"^[A-Z0-9]+[\.\-][0-9]+\s(?!.*[a-z]).+$", line) or re.match(r"^\(\d+\)\s+(?!.*[a-z]).+$", line),
+        
+        "control_description": lambda line: { "val": re.search(r"Control:", line) or re.match(r"^[A-Z0-9]+[\.\-][0-9]+\s(?!.*[a-z]).+$", line) or re.match(r"^\(\d+\)\s+(?!.*[a-z]).+$", line), "skip_line": False },
+        "control_purpose": lambda line: { "val": False, "skip_line": True },
+        "control_guidance": lambda line: { "val": False, "skip_line": True },
+        "control_other_information": lambda line: { "val": False, "skip_line": True },
+        "control_means_of_verification": lambda line: { "val": False, "skip_line": True },
+        "control_attributes": lambda line: { "val": False, "skip_line": True },
+
+        #control construct function
+        "construct_control": lambda line: (
+            (cur_ref_code := re.search(r"[A-Z0-9]+(:?[\.\-]\d+)*", line)),
+            (cur_title := line[cur_ref_code.end() + 1:].strip()),
+            (cur_slug := cur_ref_code.group(0).lower() + "-" + '-'.join(re.sub(r"[,/()|]", "", cur_title.replace('-', ' ').lower()).split()))
+        ),
+
+        # optional levels regex definition in case the default delimiter count is not enough
+        "control_levels": {
+            1: lambda line: re.match(r"^[0-9]+\.[0-9]+", line),
+            2: lambda line: re.match(r"^[A-Z]+\-[0-9]+", line),
+            3: lambda line: re.match(r"^[0-9]+", line)
+        }
+    }
 }
 
 
@@ -95,6 +224,8 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
 def parse_md(md_path: str, framework_details: dict) -> Dict:
     global G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS
     SEQUENCE_STATE_CONDITIONS = G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS[framework_details["name"]]
+
+    control_levels = SEQUENCE_STATE_CONDITIONS["control_levels"] if "control_levels" in SEQUENCE_STATE_CONDITIONS else None
     
     b_control_start = False
     control_state = ControlStates.NONE
@@ -117,11 +248,11 @@ def parse_md(md_path: str, framework_details: dict) -> Dict:
                 cur_control.other_information = cur_control.other_information[:-1]
 
             # level 1 controls are root parents
-            if UTIL_get_control_lvl(cur_control) > 1:
-                cur_control.parent_slug = parent_controls[UTIL_get_control_lvl(cur_control) - 1].slug
+            if UTIL_get_control_lvl(cur_control, control_levels) > 1:
+                cur_control.parent_slug = parent_controls[UTIL_get_control_lvl(cur_control, control_levels) - 1].slug
 
             # update parent control levels dict
-            parent_controls[UTIL_get_control_lvl(cur_control)] = cur_control
+            parent_controls[UTIL_get_control_lvl(cur_control, control_levels)] = cur_control
 
             controls_list.append(cur_control)
             cur_control = None
@@ -146,7 +277,7 @@ def parse_md(md_path: str, framework_details: dict) -> Dict:
                 # end of controls sequence, insert last filled control
                 if SEQUENCE_STATE_CONDITIONS["doc_end_controls"](line):
                     control_state = ControlStates.NONE
-                    #b_control_start = False
+                    b_control_start = False
                     _add_cur_control()
 
                 # new control
@@ -155,38 +286,55 @@ def parse_md(md_path: str, framework_details: dict) -> Dict:
                     _add_cur_control()
 
                     line = ' '.join(line.split()) # convert multi spacings to single spacing
-                    cur_ref_code = re.search(r"\d+(:?\.\d+)*", line) # NOTE: ":?" defines the group as non-capturing (avoids storing group matched sub-strings)
+                    cur_ref_code, cur_title, cur_slug = SEQUENCE_STATE_CONDITIONS["construct_control"](line)
+                    #print("FOUND NEW CONTROL: " + line + " | REF_CODE:", cur_ref_code, "| TITLE: '" + cur_title + "' | SLUG: '" + cur_slug + "'")
 
                     #print("ENTERED CONTROL: " + line + " | control = " + cur_ref_code.group(0) + ", title = '" + line[cur_ref_code.end() + 1:] + "'")
+                    ref_code = cur_ref_code if isinstance(cur_ref_code, str) else cur_ref_code.group(0)
                     cur_control = ControlModel(
                         catalog_uuid=catalog.uuid,
-                        ref_code=cur_ref_code.group(0),
-                        title=line[cur_ref_code.end() + 1:],
-                        slug=cur_ref_code.group(0) + "-" + '-'.join(line[cur_ref_code.end() + 1:].lower().split()),
-                        category=parent_controls[1].title if 1 in parent_controls else line[cur_ref_code.end() + 1:]
+                        ref_code=ref_code,
+                        title=cur_title,
+                        slug=cur_slug,
+                        category=parent_controls[1].title if 1 in parent_controls
+                            and UTIL_get_control_lvl(ref_code, control_levels) > G_BASE_CONTROL_DELIMITER_COUNT else cur_title
                     )
 
                     #print(cur_ref_code.group(0), "->", get_cur_control_lvl())
 
                 # control attributes
-                if SEQUENCE_STATE_CONDITIONS["control_attributes"](line):
-                    control_state = ControlStates.ATTRIBUTES; continue
+                seq_state_result = None
+                if ((seq_state_result := SEQUENCE_STATE_CONDITIONS["control_attributes"](line))["val"]):
+                    control_state = ControlStates.ATTRIBUTES
                 # control description
-                elif SEQUENCE_STATE_CONDITIONS["control_description"](line):
-                    control_state = ControlStates.DESCRIPTION; continue
+                elif ((seq_state_result := SEQUENCE_STATE_CONDITIONS["control_description"](line))["val"]):
+                    control_state = ControlStates.DESCRIPTION
                 # control purpose
-                elif SEQUENCE_STATE_CONDITIONS["control_purpose"](line):
-                    control_state = ControlStates.PURPOSE; continue
+                elif ((seq_state_result := SEQUENCE_STATE_CONDITIONS["control_purpose"](line))["val"]):
+                    control_state = ControlStates.PURPOSE
                 # control guidance
-                elif SEQUENCE_STATE_CONDITIONS["control_guidance"](line):
-                    control_state = ControlStates.GUIDANCE; continue
+                elif ((seq_state_result := SEQUENCE_STATE_CONDITIONS["control_guidance"](line))["val"]):
+                    control_state = ControlStates.GUIDANCE
                 # other information
-                elif SEQUENCE_STATE_CONDITIONS["control_other_information"](line):
-                    control_state = ControlStates.OTHER_INFORMATION; continue
+                elif ((seq_state_result := SEQUENCE_STATE_CONDITIONS["control_other_information"](line))["val"]):
+                    control_state = ControlStates.OTHER_INFORMATION
+
+                if seq_state_result["val"] and seq_state_result["skip_line"]:
+                    continue
+                # if the sequence condition result is a regex match, set the line content to start at the end of that match
+                if isinstance(seq_state_result["val"], re.Match):
+                    #print(seq_state_result)
+                    line = line[seq_state_result["val"].end():]
+                    if line.startswith(':'):
+                        line = line[1:].strip()
+
+
 
                 line = line.replace("\u00A0", " ") # replace non-breaking spaces with normal spaces
                 if any(ord(char) > 127 for char in line): # ignore lines containing non ascii chars
                     continue
+
+                line = line.replace("&#x2014;", "-")
 
                 line = re.sub(r"\( (.)", r"(\1", line)
                 line = re.sub(r"(.) \)", r"\1)", line)
