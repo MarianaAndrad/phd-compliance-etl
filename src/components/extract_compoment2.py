@@ -122,8 +122,8 @@ def process_pdf(source_document: str | Path, output_file: str | Path, file_props
     write_to_file(output_file, metadata, markdown)
 
 if __name__ == "__main__":
-    SOURCE_FILE = "../data/i.s.eniso-iec27002-2022-v2.00_pdf.pdf"
-    OUTPUT_FILE = "../data-output/01-markdown/i.s.eniso-iec27002-2022-v2.00_pdf.md"
+    SOURCE_FILE = "../data/NIST.SP.800-53r5.pdf"
+    OUTPUT_FILE = "../data-output/01-markdown/NIST.SP.800-53r5.md"
 
     FILE_PROPS = {
         "redact_phrases": ["This page intentionally left blank"],
