@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import logging
 from pathlib import Path
 from typing import Any
@@ -8,9 +9,8 @@ import pymupdf
 import pymupdf4llm
 from pypdf import PdfReader
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logging.basicConfig(level=logging.INFO, format="EXTRACT COMPONENT -- %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
-
 
 def redact_doc(source_document: str | Path, file_props: dict, output_dir: str = "redacted") -> Path:
     """Permanently remove sensitive phrases and margin areas from a PDF.
@@ -28,9 +28,6 @@ def redact_doc(source_document: str | Path, file_props: dict, output_dir: str = 
         margins = file_props.get("redact_margins", {})
 
         for page in doc:
-            # Redact exact phrase matches. We do NOT shrink these boxes -
-            # doing so risks leaving a visible sliver of the "redacted"
-            # text along the edges, which defeats the purpose of redaction.
             for phrase in redact_phrases:
                 for rect in page.search_for(phrase):
                     page.add_redact_annot(rect, fill=(1, 1, 1))
@@ -57,7 +54,7 @@ def redact_doc(source_document: str | Path, file_props: dict, output_dir: str = 
         redacted_path.parent.mkdir(parents=True, exist_ok=True)
 
         doc.save(redacted_path, garbage=3, deflate=True)
-        logger.info("Wrote redacted PDF to %s", redacted_path)
+        logger.info("Write redacted PDF to %s", redacted_path)
 
     finally:
         doc.close()
@@ -67,7 +64,7 @@ def redact_doc(source_document: str | Path, file_props: dict, output_dir: str = 
 def convert_to_markdown(redacted_document: str | Path) -> str:
     """Convert an already-redacted PDF to Markdown text."""
     doc = pymupdf.open(redacted_document)
-    print(f"Opened redacted document: {redacted_document}, pages: {doc.page_count}")
+    logger.info("Opened redacted document: %s, pages: %d", redacted_document, doc.page_count)
     try:
         markdown = pymupdf4llm.to_markdown(
             doc,
@@ -81,6 +78,25 @@ def convert_to_markdown(redacted_document: str | Path) -> str:
         doc.close()
 
     return markdown
+
+def clean_text(text: str) -> str:
+    """Clean up text by removing extra whitespace and newlines, also remove any
+    remaining HTML tags or formatting artifacts.
+    """
+    # Normalize line breaks encoded as HTML
+    text = text.replace("-<br>", "")   # remove hyphenation before <br>
+    text = text.replace("<br>", "\n")  # convert <br> to real newline
+
+    # Remove any remaining HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+
+    # Strip trailing/leading whitespace on each line
+    text = "\n".join(line.strip() for line in text.split("\n"))
+
+    # Collapse 2+ consecutive newlines (with optional whitespace) into a single newline
+    text = re.sub(r'\n\s*\n+', '\n', text)
+
+    return text.strip()
 
 def extract_metadata(source_document: str | Path) -> dict[str, str]:
     """Pull basic document metadata from the (original) PDF."""
@@ -112,30 +128,30 @@ def write_to_file(file_path: str | Path, metadata: dict[str, str], content: str)
         f.write(header)
         f.write(content)
 
-    logger.info("Wrote Markdown output to %s", file_path)
+    logger.info("Write Markdown output to %s", file_path)
 
 def process_pdf(source_document: str | Path, output_file: str | Path, file_props: dict[str, Any]) -> None:
     """End-to-end pipeline: redact once, then derive markdown + metadata from it."""
     redacted_path = redact_doc(source_document, file_props)
     markdown = convert_to_markdown(redacted_path)
     metadata = extract_metadata(source_document)
-    write_to_file(output_file, metadata, markdown)
+    markdown_clean = clean_text(markdown)
+    write_to_file(output_file, metadata, markdown_clean)
 
 if __name__ == "__main__":
-    SOURCE_FILE = "../data/NIST.SP.800-53r5.pdf"
-    OUTPUT_FILE = "../data-output/01-markdown/NIST.SP.800-53r5.md"
+    DATA_FILES_DIR="../data"
+    OUTPUT_DIR="../data-output/01-markdown"
 
     FILE_PROPS = {
         "redact_phrases": ["This page intentionally left blank"],
         "redact_margins": {
-            "top": 40,
+            "top": 50,
             "bottom": 40,
             "left": 0,
             "right": 0,
         },
     }
-
-    process_pdf(SOURCE_FILE, OUTPUT_FILE, FILE_PROPS)
-
-
-# TODO CHANGE THE LEFT AND RIGHT MARGINS TO 50 AND 40 RESPECTIVELY, AND TEST THE OUTPUT.
+    for source_file in Path(DATA_FILES_DIR).glob("*.pdf"):
+        output_file = Path(OUTPUT_DIR) / Path(source_file.name).with_suffix(".md")
+        logger.info("Processing %s -> %s", source_file, output_file)
+        process_pdf(source_file, output_file, FILE_PROPS)
