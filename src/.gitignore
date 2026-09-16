@@ -229,3 +229,5 @@ data-output/01-markdown/*
 
 data-output/02-cdm-instances/*
 !data-output/02-cdm-instances/.gitkeep
+
+*metadata.json
