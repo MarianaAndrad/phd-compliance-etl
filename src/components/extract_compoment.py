@@ -1,15 +1,15 @@
 import os
 from typing import Any
-from docling.document_converter import DocumentConverter
+#from docling.document_converter import DocumentConverter
 from pypdf import PdfReader
 
-converter: DocumentConverter = None
+'''converter: DocumentConverter = None
 
 def _get_converter() -> DocumentConverter:
     global converter
     if converter is None:
         converter = DocumentConverter()
-    return converter
+    return converter'''
 
 import pymupdf
 
@@ -97,7 +97,7 @@ def convert_to_markdown(source_document: str, file_props: dict) -> str:
 
 
     def _is_title_candidate(strg, search=re.compile(r'[^a-zA-Z0-9:|.,()/\-\s]').search):
-        if len(strg) > G_MAX_TITLE_CHAR_COUNT or len(strg.split()) > G_MAX_TITLE_WORD_COUNT or strg.strip()[-1] == '.':
+        if strg.strip() and (len(strg) > G_MAX_TITLE_CHAR_COUNT or len(strg.split()) > G_MAX_TITLE_WORD_COUNT or strg.strip()[-1] == '.'):
             return False
         return not bool(search(strg))
 
@@ -137,7 +137,45 @@ def convert_to_markdown(source_document: str, file_props: dict) -> str:
         text = text.replace("&#x2019;", '\'')
         text = text.replace("&#x2026;", '...')
         text = text.replace("&#x2022;", '-')
+        text = text.replace("&#xa0;", ' ')
+        text = text.replace("&#x200b;", '')
         return text
+
+    def _prev_block_has_avail_width(prev_block, block):
+        # test text continuity in terms of the available width at the end of the first block
+        first_block_word = None
+        for line in block["lines"]:
+            for span in line["spans"]:
+                if not span["text"].isspace():
+                    first_block_word = span
+                    break
+
+        if not first_block_word:
+            return False
+
+        first_word_width = first_block_word["bbox"][2] - first_block_word["bbox"][0]
+
+        if len(words := first_block_word["text"].split()) > 1:
+            first_word_width = first_word_width * (len(words[0]) + 0.5) / len(first_block_word["text"])
+
+        """print("\n\n", #first_block_word,
+            prev_block, "\n", block, "\n",
+            "| prev bbox left", prev_block["bbox"][0],
+            "| cur block left", block["bbox"][0],
+            "| prev bbox right", prev_block["bbox"][2],
+            "| cur bbox right", block["bbox"][2],
+            "| first word '", first_block_word["text"], "' size =", first_word_width,
+            "| sum width =", prev_block["bbox"][2] + first_word_width,
+            "| page width =", page.rect.width,
+            "| page right margin =", cur_page_right_margin,
+            "| page avail width =", page.rect.width - max(prev_block["bbox"][0], block["bbox"][0], (cur_page_right_margin if cur_page_right_margin <= cur_page_left_margin * 2 else 0)),
+            "\n\n has available width?? ->", prev_block["bbox"][2] + first_word_width < page.rect.width - max(prev_block["bbox"][0], block["bbox"][0], (cur_page_right_margin if cur_page_right_margin <= cur_page_left_margin * 2 else 0)),
+            "| cur page =", page)"""
+
+        if prev_block["bbox"][2] + first_word_width < page.rect.width - max(prev_block["bbox"][0], block["bbox"][0], (cur_page_right_margin if cur_page_right_margin <= cur_page_left_margin * 2 else 0)):
+            return True
+
+        return False
 
     def _should_merge_title():
         return (prev_block and prev_block["bbox"][3] > block["bbox"][1] and
@@ -145,40 +183,164 @@ def convert_to_markdown(source_document: str, file_props: dict) -> str:
                     _is_text_continuation(prev_block, block) and
                     _is_title_candidate(prev_block_text) and _is_title_candidate(block_text) and
                     prev_block_text.isupper() == block_text.isupper() and
-                    len(prev_block_text.split()) + len(block_text.split()) <= G_MAX_TITLE_WORD_COUNT)
+                    len(prev_block_text.split()) + len(block_text.split()) <= G_MAX_TITLE_WORD_COUNT and
+                    not _prev_block_has_avail_width(prev_block, block))
+
+    def _is_inside_bbox(outer_bbox, inner_bbox):
+        out_l, out_t, out_r, out_b = outer_bbox
+        inn_l, inn_t, inn_r, inn_b = inner_bbox
+
+        # check if any inner corner is inside the outer bbox
+        if inn_l >= out_l and inn_l <= out_r and inn_t >= out_t and inn_t <= out_b:
+            return True
+        elif inn_l >= out_l and inn_l <= out_r and inn_b >= out_t and inn_b <= out_b:
+            return True
+        elif inn_r >= out_l and inn_r <= out_r and inn_b >= out_t and inn_b <= out_b:
+            return True
+        elif inn_r >= out_l and inn_r <= out_r and inn_t >= out_t and inn_t <= out_b:
+            return True
+        
+        return False
+
+    def _find_table_intersect(tables, bbox):
+        for table in tables:
+            #for k, v in vars(table).items():
+            #    print(k)
+            if _is_inside_bbox(table.bbox, bbox):
+                return table
+
+        return None
+
+    def _generate_table_markdown(table_data):
+        table_data = [[(cell or "").replace('\n', ' ') for cell in row] for row in table_data]
+        header = table_data[0]
+        rows = table_data[1:]
+
+        table_md = "|" + "|".join(header) + "|\n"
+        table_md += "|" + "|".join("---" for _ in header) + "|\n"
+        for row in rows:
+            table_md += "|" + "|".join(row) + "|\n"
+
+        #print("\n"+table_md)
+        return table_md
+
+    def _get_pending_table():
+        if pending_table and pending_table not in intersected_tables_list:
+            intersected_tables_list.append(pending_table)
+            # NOTE: We use a custom table markdown converter function as the table.to_markdown() method sometimes
+            #       adds unwanted content from the table surroundings
+            return "\n" + _generate_table_markdown(pending_table.extract())
+        return ""
 
     doc = pymupdf.open(source_document)
 
+    def _filter_false_positive_tables(tables):
+        verified_tables = []
+        for table in tables:
+            total_cells = sum(1 for row in table.extract() for cell in row)
+            empty_cells = sum(cell is None for row in table.extract() for cell in row)
+            average_cell_chars = sum(len(cell) if cell else 0 for row in table.extract() for cell in row) / (total_cells - empty_cells)
+            average_cell_words = sum(len(cell.split()) if cell else 0 for row in table.extract() for cell in row) / (total_cells - empty_cells)
+            #for cell in table.extract():
+            #    print(cell)
+            #print("total cells:", total_cells, "| empty table cells:", empty_cells, "| average cell chars:", average_cell_chars, "| average cell words:", average_cell_words)
+
+            if not (empty_cells >= total_cells * 0.5 or average_cell_chars >= 60 or average_cell_words >= 8 or any(cell is None for cell in table.extract()[0][1:])):
+                #print(table.extract(), "\n\n\n")
+                verified_tables.append(table)
+                #print(_generate_table_markdown(table.extract()), "\n\n")
+            #else:
+            #    print("> Found false positive table")
+
+        return verified_tables
+
     doc_content = ""
     for page in doc:
+
+        tables = page.find_tables()
+        intersected_table = None
+        intersected_tables_list = []
+        pending_table = None
+
+        # calculate current page margins
+        # https://stackoverflow.com/questions/77182740/is-there-a-way-to-measure-the-margins-of-a-pdf-file-using-image-processing-in-py
+        content_rect = pymupdf.EMPTY_RECT()
+        blocks = page.get_text("blocks") # extract text and image blocks
+        for b in blocks:
+            content_rect |= b[:4] # join rect with the block bbox
+        #print(f"Page {page.number} margins:\n    Top {content_rect.y0}\n   Left {content_rect.x0}\n  Right {page.rect.width - content_rect.x1}\n Bottom {page.rect.height - content_rect.y1}")
+        cur_page_left_margin = content_rect.x0
+        cur_page_right_margin = page.rect.width - content_rect.x1
+
         blocks = page.get_text("dict")["blocks"]
         prev_block = None
         prev_block_text = ""
+
+        #print(page.rect.width, page.rect.height)
+
+        #drawings = page.get_drawings()
+        #print(page)
+        #for drawing in drawings:
+            #if drawing["items"][0][0] == "re" and not (drawing["fill"][0] == 0.0 or drawing["fill"][1] == 0.0 or drawing["fill"][2] == 0.0):
+                #print(drawing["rect"].width, drawing["rect"].height)
+            #for item in drawing["items"]:
+
+        #for table in tables:
+        #    print(table.to_markdown(), "\n-------------------------\n",table.bbox)
+
+        tables = _filter_false_positive_tables(tables)
+
         for block in blocks:
-            #print(block)
             block_text = ""
+
+            prev_text_y = None
+            text_y = None
             if block["type"] == 0:  # text block
                 for line in block["lines"]:
                     for span in line["spans"]:
-                        #print(f"{span['text']!r}  font={span['font']}  size={span['size']:.1f}")
+                        
+                        if not span["text"].isspace():
+                            prev_text_y = text_y
+                            text_y = span["origin"][1]
+
+                        if prev_text_y and text_y and text_y - prev_text_y > 25:
+                            block_text += "\n"
+                            text_y = None
+
+                        if (intersected_table := _find_table_intersect(tables, span["bbox"])):
+                            pending_table = intersected_table
+                            #print("TEXT INSIDE TABLE!", span["text"])
+                            continue
+
                         block_text += span["text"]
+
+                if not block_text:
+                    continue
 
                 block_text = _normalize_non_ascii(block_text)
 
                 doc_content += prev_block_text
-                #prev_block_text = ""
+                doc_content += _get_pending_table() # insert table markdown on first occurrence
 
                 # title merge composite check
                 if not _should_merge_title():
                     doc_content += '\n'
                 #else:
-                #    print("BLOCKS SHOULD MERGE!", prev_block_text, "(size =", _get_block_font_size(prev_block),
-                #        _is_title_candidate(prev_block_text) ,") ||| ", block_text, "(size =", _get_block_font_size(block), _is_title_candidate(block_text), ")")
+                #    print("BLOCKS SHOULD MERGE!",
+                #          prev_block_text, "(size =", _get_block_font_size(prev_block), _is_title_candidate(prev_block_text), prev_block["bbox"],
+                #          ") ||| ", block_text, "(size =", _get_block_font_size(block), _is_title_candidate(block_text), block["bbox"], ")")
+
+                if (prev_block and
+                    #prev_block_text[0].isupper() and
+                    #_is_title_candidate(prev_block_text) and# not _is_title_candidate(block_text) and
+                    _prev_block_has_avail_width(prev_block, block)):# or (next_block and next_block["type"] == 0 and _prev_block_has_avail_width(block, next_block))):
+                    doc_content += '\n'
 
                 prev_block = block
                 prev_block_text = block_text
 
         doc_content += prev_block_text
+        doc_content += _get_pending_table()
 
 
     return doc_content
