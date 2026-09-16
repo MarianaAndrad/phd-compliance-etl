@@ -1,11 +1,9 @@
-#from dependencies.database import get_database
+#from dependencies.database import get_db_client
 
 import re
 import json
-import asyncio
 
 from uuid import uuid4
-from pydantic import BaseModel, ConfigDict, Field
 from typing import Dict
 from enum import Enum
 
@@ -131,18 +129,37 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
         "control_means_of_verification": lambda line: False,
         "control_attributes": lambda line: False,
     },
+    # "iso27002": {
+    #     "doc_start_controls": lambda line: "5 Organizational controls".lower() in line.lower(),
+    #     "doc_end_controls": lambda line: "A.1 General".lower() in line.lower(),
+    #
+    #     "new_control": lambda line: re.search(r"^#+\s+\d+(\.\d+)*\s", line), #"^##\\s+\\d+"
+    #
+    #     "control_description": lambda line: { "val": "Control".lower() in line.lower(), "skip_line": True },
+    #     "control_purpose": lambda line: { "val": "Purpose".lower() in line.lower(), "skip_line": True },
+    #     "control_guidance": lambda line: { "val": "Guidance".lower() in line.lower(), "skip_line": True },
+    #     "control_other_information": lambda line: { "val": "Other information".lower() in line.lower(), "skip_line": True },
+    #     "control_means_of_verification": lambda line: { "val": "Means of verification".lower() in line.lower(), "skip_line": True },
+    #     "control_attributes": lambda line: { "val": re.search(r"^##\s+\d+", line), "skip_line": True },
+    #     #control construct function
+    #     "construct_control": lambda line: (
+    #         (cur_ref_code := re.search(r"\d+(:?\.\d+)*", line)),
+    #         (cur_title := line[cur_ref_code.end() + 1:]),
+    #         (cur_slug := cur_ref_code.group(0) + "-" + '-'.join(cur_title.lower().split()))
+    #     ),
+    # },
     "iso27002": {
-        "doc_start_controls": lambda line: "## 5 Organizational controls".lower() in line.lower(),
-        "doc_end_controls": lambda line: "## A.1	 General".lower() in line.lower(),
+        "doc_start_controls": lambda line: "5 organizational controls".lower() in line.lower(),
+        "doc_end_controls": lambda line: "a.1 general".lower() in line.lower(),
 
-        "new_control": lambda line: re.search(r"^##\s+\d+", line), #"^##\\s+\\d+"
-        
-        "control_description": lambda line: { "val": "## Control".lower() in line.lower(), "skip_line": True },
-        "control_purpose": lambda line: { "val": "## Purpose".lower() in line.lower(), "skip_line": True },
-        "control_guidance": lambda line: { "val": "## Guidance".lower() in line.lower(), "skip_line": True },
-        "control_other_information": lambda line: { "val": "## Other information".lower() in line.lower(), "skip_line": True },
-        "control_means_of_verification": lambda line: { "val": "## Means of verification".lower() in line.lower(), "skip_line": True },
-        "control_attributes": lambda line: { "val": re.search(r"^##\s+\d+", line), "skip_line": True },
+        "new_control": lambda line: re.search(r"^#+\s+\d+", line),
+
+        "control_description": lambda line: { "val": re.match(r"^#+\s*control\s*$", line, re.IGNORECASE), "skip_line": True },
+        "control_purpose": lambda line: { "val": re.match(r"^#+\s*purpose\s*$", line, re.IGNORECASE), "skip_line": True },
+        "control_guidance": lambda line: { "val": re.match(r"^#+\s*guidance\s*$", line, re.IGNORECASE), "skip_line": True },
+        "control_other_information": lambda line: { "val": re.match(r"^#+\s*other information\s*$", line, re.IGNORECASE), "skip_line": True },
+        "control_means_of_verification": lambda line: { "val": re.match(r"^#+\s*means of verification\s*$", line, re.IGNORECASE), "skip_line": True },
+        "control_attributes": lambda line: { "val": re.search(r"^#+\s+\d+", line), "skip_line": True },
 
         #control construct function
         "construct_control": lambda line: (
@@ -269,6 +286,8 @@ def parse_md(md_path: str, framework_details: dict) -> Dict:
     with open(md_path, "r", encoding="utf-8") as file:
         for line in file:
             line = line.strip()
+            line = line.replace("**", "")
+            line = line.replace("<br>", "")
 
             if SEQUENCE_STATE_CONDITIONS["doc_start_controls"](line):
                 b_control_start = True
