@@ -54,7 +54,7 @@ def redact_doc(source_document: str | Path, file_props: dict, output_dir: str = 
         redacted_path.parent.mkdir(parents=True, exist_ok=True)
 
         doc.save(redacted_path, garbage=3, deflate=True)
-        logger.info("Write redacted PDF to %s", redacted_path)
+        logger.info("Wrote redacted PDF to %s", redacted_path)
 
     finally:
         doc.close()
@@ -79,22 +79,31 @@ def convert_to_markdown(redacted_document: str | Path) -> str:
 
     return markdown
 
+# Typographic characters that don't round-trip cleanly through downstream
+# tokenizers/embeddings; fold them to their plain-ASCII equivalents.
+_NON_ASCII_REPLACEMENTS = {
+    "–": "-",    # en dash
+    "—": "-",    # em dash
+    "‘": "'",    # left single quote
+    "’": "'",    # right single quote
+    "“": '"',    # left double quote
+    "”": '"',    # right double quote
+    "…": "...",  # ellipsis
+    "•": "-",    # bullet
+    " ": " ",    # non-breaking space
+    "​": "",     # zero-width space
+}
+
 def clean_text(text: str) -> str:
-    """Clean up text by removing extra whitespace and newlines, also remove any
-    remaining HTML tags or formatting artifacts.
-    """
-    # Normalize line breaks encoded as HTML
-    text = text.replace("-<br>", "")   # remove hyphenation before <br>
-    text = text.replace("<br>", "\n")  # convert <br> to real newline
+    """Normalize whitespace, punctuation and OCR artifacts in extracted Markdown."""
+    for token, replacement in {**_NON_ASCII_REPLACEMENTS}.items():
+        text = text.replace(token, replacement)
 
-    # Remove any remaining HTML tags
-    text = re.sub(r'<[^>]+>', '', text)
+    # Strip trailing whitespace left on wrapped lines
+    text = "\n".join(line.rstrip() for line in text.split("\n"))
 
-    # Strip trailing/leading whitespace on each line
-    text = "\n".join(line.strip() for line in text.split("\n"))
-
-    # Collapse 2+ consecutive newlines (with optional whitespace) into a single newline
-    text = re.sub(r'\n\s*\n+', '\n', text)
+    # Collapse runs of 3+ newlines (page/column breaks) down to a single blank line
+    text = re.sub(r"\n{3,}", "\n\n", text)
 
     return text.strip()
 
@@ -128,10 +137,10 @@ def write_to_file(file_path: str | Path, metadata: dict[str, str], content: str)
         f.write(header)
         f.write(content)
 
-    logger.info("Write Markdown output to %s", file_path)
+    logger.info("Wrote Markdown output to %s", file_path)
 
 def process_pdf(source_document: str | Path, output_file: str | Path, file_props: dict[str, Any]) -> None:
-    """End-to-end pipeline: redact once, then derive markdown + metadata from it."""
+    """End-to-end pipeline: redact once, then derive Markdown + metadata from it."""
     redacted_path = redact_doc(source_document, file_props)
     markdown = convert_to_markdown(redacted_path)
     metadata = extract_metadata(source_document)
