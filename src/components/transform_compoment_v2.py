@@ -1,9 +1,11 @@
-# from dependencies.database import get_db_client
+# from dependencies.database import get_database
 
 import re
 import json
+import asyncio
 
 from uuid import uuid4
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Dict
 from enum import Enum
 
@@ -23,11 +25,14 @@ def UTIL_is_phrase_continuity(prev_str, next_str):
             next_str_first_word[0][0].isupper() and not next_str_first_word[0].isupper()):
         return False
 
+    # if '.' not in prev_str_last_word and next_str_first_word[0][0].isupper():
+    #    return False
+
     return True
 
 
 def UTIL_is_list_item_start(strg):
-    return (not not re.match(r"\((?:[a-z]|\d+)\)\s+", strg)) or (not not re.match(r"(?:[a-z]|\d+)\.\s+", strg))
+    return (not not re.match(r"\((?:[a-z]|\d+)\)\s+", strg)) or (not not re.match(r"(?:[a-z]|\d+)[\.\)]\s+", strg))
 
 
 G_IN_ITEM_LIST = False
@@ -55,8 +60,9 @@ def UTIL_string_append(dest, source):
     if (
             ((source and source[0].islower()) or (dest and dest[-1] != '\n' and dest[-1] not in end_punctuation)) and
             dest.split('\n')[-1].isupper() == source.isupper() and
-            not UTIL_is_list_item_start(source) and
-            UTIL_is_phrase_continuity(dest, source)
+            not UTIL_is_list_item_start(source) and not (source and source[0] == '-' and dest.endswith("; and")) and
+            UTIL_is_phrase_continuity(dest, source) and
+            source and not (source[0] == '|' and source[-1] == "|")  # check if incoming line is a table row
     ):
         if dest and dest[-1] != ' ':
             dest += ' '
@@ -124,19 +130,19 @@ class ControlStates(Enum):
 
 # TODO: Move to own file?
 G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
-    "iso27002": {
-        "new_control": lambda line: re.search(r"^#+\s+\d+", line),
+    "standard": {
+        "new_control": lambda line: re.match(r"(?!.*[()])\d+(:?\.\d+)*[a-zA-Z\s,\-]+$", line) and not line.islower(),
 
-        "control_description": lambda line: {"val": re.match(r"^#+\s*control\s*$", line, re.IGNORECASE),
-                                             "skip_line": True},
-        "control_purpose": lambda line: {"val": re.match(r"^#+\s*purpose\s*$", line, re.IGNORECASE), "skip_line": True},
-        "control_guidance": lambda line: {"val": re.match(r"^#+\s*guidance\s*$", line, re.IGNORECASE),
-                                          "skip_line": True},
-        "control_other_information": lambda line: {"val": re.match(r"^#+\s*other information\s*$", line, re.IGNORECASE),
-                                                   "skip_line": True},
-        "control_means_of_verification": lambda line: {
-            "val": re.match(r"^#+\s*means of verification\s*$", line, re.IGNORECASE), "skip_line": True},
-        "control_attributes": lambda line: {"val": re.search(r"^#+\s+\d+", line), "skip_line": True},
+         "control_description": lambda line: {
+            "val": re.match(r"^#*\s*control\s*$", line, re.IGNORECASE)
+                or (re.match(r"(?!.*[()])\d+(:?\.\d+)*[a-zA-Z\s,\-:/\d]+$", line) and not line.islower()),
+            "skip_line": True
+        },
+        "control_purpose": lambda line: {"val": re.match(r"^#*\s*purpose\s*$", line, re.IGNORECASE), "skip_line": True},
+        "control_guidance": lambda line: {"val": re.match(r"^#*\s*guidance\s*$", line, re.IGNORECASE), "skip_line": True},
+        "control_other_information": lambda line: {"val": re.match(r"^#*\s*other information\s*$", line, re.IGNORECASE),"skip_line": True},
+        "control_means_of_verification": lambda line: {"val": re.match(r"^#*\s*means of verification\s*$", line, re.IGNORECASE), "skip_line": True},
+        "control_attributes": lambda line: {"val": bool(re.search(r"\|.+\|", line)), "skip_line": False},
 
         # control construct function
         "construct_control": lambda line: (
@@ -145,13 +151,38 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
             (cur_slug := cur_ref_code.group(0) + "-" + '-'.join(cur_title.lower().split()))
         )
     },
+
+    "framework": {
+        "new_control": lambda line: re.match(r"^[A-Z0-9]+[\.\-][0-9]+\s(?!.*[a-z]).+$", line) or re.match(r"^\(\d+\)\s+(?!.*[a-z]).+$", line),
+
+        "control_description": lambda line: { "val": re.match(r"^#*\s*control\s*$", line, re.IGNORECASE) or re.match(r"^[A-Z0-9]+[\.\-][0-9]+\s(?!.*[a-z]).+$", line) or re.match(r"^\(\d+\)\s+(?!.*[a-z]).+$", line), "skip_line": False },
+        "control_purpose": lambda line: { "val": False, "skip_line": True },
+        "control_guidance": lambda line: { "val": False, "skip_line": True },
+        "control_other_information": lambda line: { "val": False, "skip_line": True },
+        "control_means_of_verification": lambda line: { "val": False, "skip_line": True },
+        "control_attributes": lambda line: { "val": False, "skip_line": True },
+
+        #control construct function
+        "construct_control": lambda line: (
+            (cur_ref_code := re.search(r"[A-Z0-9]+(:?[\.\-]\d+)*", line)),
+            (cur_title := line[cur_ref_code.end() + 1:].strip()),
+            (cur_slug := cur_ref_code.group(0).lower() + "-" + '-'.join(re.sub(r"[,/()|]", "", cur_title.replace('-', ' ').lower()).split()))
+        ),
+
+        # optional levels regex definition in case the default delimiter count is not enough
+        "control_levels": {
+            1: lambda line: re.match(r"^[0-9]+\.[0-9]+", line),
+            2: lambda line: re.match(r"^[A-Z]+\-[0-9]+", line),
+            3: lambda line: re.match(r"^[0-9]+", line)
+        }
+    },
 }
 
 
 # state machine parser function
 def parse_md(md_path: str, framework_details: dict) -> Dict:
     global G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS
-    SEQUENCE_STATE_CONDITIONS = G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS[framework_details["name"]]
+    SEQUENCE_STATE_CONDITIONS = G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS[framework_details["type"]]
 
     control_levels = SEQUENCE_STATE_CONDITIONS[
         "control_levels"] if "control_levels" in SEQUENCE_STATE_CONDITIONS else None
@@ -198,21 +229,13 @@ def parse_md(md_path: str, framework_details: dict) -> Dict:
     with open(md_path, "r", encoding="utf-8") as file:
         for line in file:
             line = line.strip()
-            line = line.replace("**", "")
-            line = line.replace("-<br>", "")
-            line = line.replace("<br>", " ")
-            print("LINE:", line)
-            if line is None or line == '':
-                continue
 
-            print("PROCESSED LINE:", line)
-
-            if framework_details["doc_start_controls"].lower() in line.lower():
+            if re.match(framework_details["doc_start_controls"], line, re.IGNORECASE):
                 b_control_start = True
 
             if b_control_start:
                 # end of controls sequence, insert last filled control
-                if framework_details["doc_end_controls"].lower() in line.lower():
+                if re.match(framework_details["doc_end_controls"], line, re.IGNORECASE):
                     control_state = ControlStates.NONE
                     b_control_start = False
                     _add_cur_control()
@@ -229,7 +252,7 @@ def parse_md(md_path: str, framework_details: dict) -> Dict:
                     # print("ENTERED CONTROL: " + line + " | control = " + cur_ref_code.group(0) + ", title = '" + line[cur_ref_code.end() + 1:] + "'")
                     ref_code = cur_ref_code if isinstance(cur_ref_code, str) else cur_ref_code.group(0)
                     cur_control = ControlModel(
-                        catalog_uuid=catalog.uuid,
+                        # catalog_uuid=catalog.uuid,
                         ref_code=ref_code,
                         title=cur_title,
                         slug=cur_slug,
@@ -242,7 +265,8 @@ def parse_md(md_path: str, framework_details: dict) -> Dict:
 
                 # control attributes
                 seq_state_result = None
-                if ((seq_state_result := SEQUENCE_STATE_CONDITIONS["control_attributes"](line))["val"]):
+                if control_state in (ControlStates.DESCRIPTION, ControlStates.ATTRIBUTES) and \
+                        ((seq_state_result := SEQUENCE_STATE_CONDITIONS["control_attributes"](line))["val"]):
                     control_state = ControlStates.ATTRIBUTES
                 # control description
                 elif ((seq_state_result := SEQUENCE_STATE_CONDITIONS["control_description"](line))["val"]):
@@ -331,22 +355,10 @@ def dump_cdm_instances(file_path: str, cdm_instances: Dict) -> None:
 
 
 if __name__ == "__main__":
-    # DATA_MD_FILES_DIR = "../data-output/01-markdown"
-    # OUTPUT_DIR = "../data-output/02-cdm-instances"
-    # for md_file in Path(DATA_MD_FILES_DIR).glob("*.md"):
-    #     framework_name = md_file.stem.split('.')[0]
-    #     print(f"Processing {md_file} for framework {framework_name}...")
+    document_path = "./data-output/01-markdown/i.s.eniso-iec27002-2022-v2.00_pdf.md"
+    output_file = "./data-output/02-cdm-instances/i.s.eniso-iec27002-2022-v2.00_pdf.json"
 
-    document_path = "../data-output/01-markdown/i.s.eniso-iec27002-2022-v2.00_pdf.md"
-    output_file = "../data-output/02-cdm-instances/i.s.eniso-iec27002-2022-v2.00_pdf.json"
-    framework_details = {
-        "name": "iso27002",
-        "type": "framework",
-        "publisher": "ISO/IEC",
-        "doc_start_controls": "5 organizational controls",
-        "doc_end_controls": "Information security roles and responsibilities"
-    }
-    cdm_instances = parse_md(md_path=document_path, framework_details=framework_details)
-    dump_cdm_instances(output_file, cdm_instances)
+    controls_list = parse_md(document_path)
+    dump_cdm_instances(output_file, controls_list)
 
-# asyncio.run(persist_data(controls_list))
+    # asyncio.run(persist_data(controls_list))
