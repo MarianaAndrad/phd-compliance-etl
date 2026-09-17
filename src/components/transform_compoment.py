@@ -1,9 +1,11 @@
-#from dependencies.database import get_db_client
+#from dependencies.database import get_database
 
 import re
 import json
+import asyncio
 
 from uuid import uuid4
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Dict
 from enum import Enum
 
@@ -22,10 +24,13 @@ def UTIL_is_phrase_continuity(prev_str, next_str):
     if prev_str_last_word[-1][-1] == '"' and (next_str_first_word[0][0].isupper() and not next_str_first_word[0].isupper()):
         return False
 
+    #if '.' not in prev_str_last_word and next_str_first_word[0][0].isupper():
+    #    return False
+
     return True
 
 def UTIL_is_list_item_start(strg):
-    return (not not re.match(r"\((?:[a-z]|\d+)\)\s+", strg)) or (not not re.match(r"(?:[a-z]|\d+)\.\s+", strg))
+    return (not not re.match(r"\((?:[a-z]|\d+)\)\s+", strg)) or (not not re.match(r"(?:[a-z]|\d+)[\.\)]\s+", strg))
 
 G_IN_ITEM_LIST = False
 def UTIL_update_text_state(strg):
@@ -49,8 +54,9 @@ def UTIL_string_append(dest, source):
     if (
         ((source and source[0].islower()) or (dest and dest[-1] != '\n' and dest[-1] not in end_punctuation)) and
         dest.split('\n')[-1].isupper() == source.isupper() and
-        not UTIL_is_list_item_start(source) and
-        UTIL_is_phrase_continuity(dest, source)
+        not UTIL_is_list_item_start(source) and not (source and source[0] == '-' and dest.endswith("; and")) and
+        UTIL_is_phrase_continuity(dest, source) and
+        source and not (source[0] == '|' and source[-1] == "|") # check if incoming line is a table row
         ):
         if dest and dest[-1] != ' ':
             dest += ' '
@@ -117,49 +123,37 @@ class ControlStates(Enum):
 # TODO: Move to own file?
 G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
     "iso27001": {
-        "doc_start_controls": lambda line: "## 4 Context of the organization".lower() in line.lower(),
-        "doc_end_controls": lambda line: "## Annex A".lower() in line.lower(),
+        "doc_start_controls": lambda line: re.match(r"4\s+Context of the organization$", line),
+        "doc_end_controls": lambda line: re.match(r"Annex A(?:\s\(normative\))?\s*$", line),
 
-        "new_control": lambda line: re.search(r"^##\s+\d+", line), #"^##\\s+\\d+"
+        "new_control": lambda line: re.match(r"(?!.*[()])\d+(:?\.\d+)*[a-zA-Z\s,\-]+$", line) and not line.islower(),
         
-        "control_description": lambda line: re.search(r"^##\s+\d+", line),
-        "control_purpose": lambda line: False,
-        "control_guidance": lambda line: False,
-        "control_other_information": lambda line: False,
-        "control_means_of_verification": lambda line: False,
-        "control_attributes": lambda line: False,
+        "control_description": lambda line: { "val": re.match(r"(?!.*[()])\d+(:?\.\d+)*[a-zA-Z\s,\-]+$", line) and not line.islower(), "skip_line": True },
+        "control_purpose": lambda line: { "val": False, "skip_line": True },
+        "control_guidance": lambda line: { "val": False, "skip_line": True },
+        "control_other_information": lambda line: { "val": False, "skip_line": True },
+        "control_means_of_verification": lambda line: { "val": False, "skip_line": True },
+        "control_attributes": lambda line: { "val": False, "skip_line": True },
+
+        #control construct function
+        "construct_control": lambda line: (
+            (cur_ref_code := re.search(r"\d+(:?\.\d+)*", line)),
+            (cur_title := line[cur_ref_code.end() + 1:]),
+            (cur_slug := cur_ref_code.group(0) + "-" + '-'.join(cur_title.lower().split()))
+        )
     },
-    # "iso27002": {
-    #     "doc_start_controls": lambda line: "5 Organizational controls".lower() in line.lower(),
-    #     "doc_end_controls": lambda line: "A.1 General".lower() in line.lower(),
-    #
-    #     "new_control": lambda line: re.search(r"^#+\s+\d+(\.\d+)*\s", line), #"^##\\s+\\d+"
-    #
-    #     "control_description": lambda line: { "val": "Control".lower() in line.lower(), "skip_line": True },
-    #     "control_purpose": lambda line: { "val": "Purpose".lower() in line.lower(), "skip_line": True },
-    #     "control_guidance": lambda line: { "val": "Guidance".lower() in line.lower(), "skip_line": True },
-    #     "control_other_information": lambda line: { "val": "Other information".lower() in line.lower(), "skip_line": True },
-    #     "control_means_of_verification": lambda line: { "val": "Means of verification".lower() in line.lower(), "skip_line": True },
-    #     "control_attributes": lambda line: { "val": re.search(r"^##\s+\d+", line), "skip_line": True },
-    #     #control construct function
-    #     "construct_control": lambda line: (
-    #         (cur_ref_code := re.search(r"\d+(:?\.\d+)*", line)),
-    #         (cur_title := line[cur_ref_code.end() + 1:]),
-    #         (cur_slug := cur_ref_code.group(0) + "-" + '-'.join(cur_title.lower().split()))
-    #     ),
-    # },
     "iso27002": {
-        "doc_start_controls": lambda line: "5 organizational controls".lower() in line.lower(),
-        "doc_end_controls": lambda line: "a.1 general".lower() in line.lower(),
+        "doc_start_controls": lambda line: re.match(r"5\s+Organizational controls$", line),
+        "doc_end_controls": lambda line: re.match(r"Annex A(?:\s\(informative\))?\s*$", line),
 
-        "new_control": lambda line: re.search(r"^#+\s+\d+", line),
+        "new_control": lambda line: re.match(r"(?!.*[()])\d+(:?\.\d+)*[a-zA-Z\s,\-]+$", line) and not line.islower(),
 
-        "control_description": lambda line: { "val": re.match(r"^#+\s*control\s*$", line, re.IGNORECASE), "skip_line": True },
-        "control_purpose": lambda line: { "val": re.match(r"^#+\s*purpose\s*$", line, re.IGNORECASE), "skip_line": True },
-        "control_guidance": lambda line: { "val": re.match(r"^#+\s*guidance\s*$", line, re.IGNORECASE), "skip_line": True },
-        "control_other_information": lambda line: { "val": re.match(r"^#+\s*other information\s*$", line, re.IGNORECASE), "skip_line": True },
-        "control_means_of_verification": lambda line: { "val": re.match(r"^#+\s*means of verification\s*$", line, re.IGNORECASE), "skip_line": True },
-        "control_attributes": lambda line: { "val": re.search(r"^#+\s+\d+", line), "skip_line": True },
+        "control_description": lambda line: { "val": re.match(r"Control$", line), "skip_line": True },
+        "control_purpose": lambda line: { "val": re.match(r"Purpose$", line), "skip_line": True },
+        "control_guidance": lambda line: { "val": re.match(r"Guidance$", line), "skip_line": True },
+        "control_other_information": lambda line: { "val": re.match(r"Other information$", line), "skip_line": True },
+        "control_means_of_verification": lambda line: { "val": re.match(r"Means of verification$", line), "skip_line": True },
+        "control_attributes": lambda line: { "val": re.match(r"(?!.*[()])\d+(:?\.\d+)*[a-zA-Z\s,\-]+$", line), "skip_line": True },
 
         #control construct function
         "construct_control": lambda line: (
@@ -169,21 +163,28 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
         )
     },
     "iso27005": {
-        "doc_start_controls": lambda line: "## 5 Information security risk management".lower() in line.lower(),
-        "doc_end_controls": lambda line: "## Annex A".lower() in line.lower(),
+        "doc_start_controls": lambda line: re.match(r"5\s+Information security risk management$", line),
+        "doc_end_controls": lambda line: re.match(r"Annex A(?:\s\(informative\))?\s*$", line),
 
-        "new_control": lambda line: re.search(r"^##\s+\d+", line), #"^##\\s+\\d+"
+        "new_control": lambda line: re.match(r"(?!.*[()])\d+(:?\.\d+)*[a-zA-Z\s,\-:/\d]+$", line) and not line.islower(),
         
-        "control_description": lambda line: re.search(r"^##\s+\d+", line),
-        "control_purpose": lambda line: False,
-        "control_guidance": lambda line: False,
-        "control_other_information": lambda line: False,
-        "control_means_of_verification": lambda line: False,
-        "control_attributes": lambda line: False,
+        "control_description": lambda line: { "val": re.match(r"(?!.*[()])\d+(:?\.\d+)*[a-zA-Z\s,\-:/\d]+$", line) and not line.islower(), "skip_line": True },
+        "control_purpose": lambda line: { "val": False, "skip_line": True },
+        "control_guidance": lambda line: { "val": False, "skip_line": True },
+        "control_other_information": lambda line: { "val": False, "skip_line": True },
+        "control_means_of_verification": lambda line: { "val": False, "skip_line": True },
+        "control_attributes": lambda line: { "val": False, "skip_line": True },
+
+        #control construct function
+        "construct_control": lambda line: (
+            (cur_ref_code := re.search(r"\d+(:?\.\d+)*", line)),
+            (cur_title := line[cur_ref_code.end() + 1:]),
+            (cur_slug := cur_ref_code.group(0) + "-" + '-'.join(cur_title.lower().split()))
+        )
     },
     "nistcsf": {
-        "doc_start_controls": lambda line: "GOVERN (GV):".lower() in line.lower(),
-        "doc_end_controls": lambda line: "## Appendix B. CSF Tiers".lower() in line.lower(),
+        "doc_start_controls": lambda line: re.match(r"GOVERN \(GV\):", line),
+        "doc_end_controls": lambda line: re.match(r"Appendix B. CSF Tiers\s*$", line),
 
         "new_control": lambda line: re.search(r"[A-Z][A-Za-z ,]+\([A-Za-z]{2}(\.[A-Z]{2})?\)", line) or re.search(r"[A-Z]{2}\.[A-Z]{2}(-[0-9]{2})?", line),
         
@@ -286,8 +287,6 @@ def parse_md(md_path: str, framework_details: dict) -> Dict:
     with open(md_path, "r", encoding="utf-8") as file:
         for line in file:
             line = line.strip()
-            line = line.replace("**", "")
-            line = line.replace("<br>", "")
 
             if SEQUENCE_STATE_CONDITIONS["doc_start_controls"](line):
                 b_control_start = True
