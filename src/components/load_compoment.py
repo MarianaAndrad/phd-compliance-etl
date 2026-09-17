@@ -1,7 +1,6 @@
 import json
 
-from typing import Dict, List
-from uuid import uuid4
+from typing import Dict, List, Any
 
 from pymongo import AsyncMongoClient
 
@@ -65,7 +64,7 @@ async def persist_data(mongodb_client: AsyncMongoClient, framework_name: str, cd
     await persist_controls(mongodb_client, COMPLIANCE_DB_NAME, catalog_uuid, cdm_instances["controls_list"])
 
 
-def load_cdm_instances(cdm_path: str) -> List[ControlModel]:
+def load_cdm_instances(cdm_path: str) -> dict[str, CatalogModel | list[Any]]:
     json_data, controls_list, catalog = [], [], None
     
     with open(cdm_path, "r", encoding="utf-8") as f:
