@@ -29,8 +29,8 @@ class Settings(BaseSettings):
         return self
 
     ## MongoDB collections
-    DB_MONGO_CATALOGS_COLL: str = "catalogs"
-    DB_MONGO_CONTROLS_COLL: str = "controls"
+    DB_MONGO_CATALOG_COLLECTION: str = "catalogs"
+    DB_MONGO_CONTROL_COLLECTION: str = "controls"
 
     # LLM
     LLM_BASE_URL: str = "http://localhost:8000/"

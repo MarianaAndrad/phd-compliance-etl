@@ -131,7 +131,7 @@ class ControlStates(Enum):
 # TODO: Move to own file?
 G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
     "standard": {
-        "new_control": lambda line: re.match(r"(?!.*[()])\d+(:?\.\d+)*[a-zA-Z\s,\-]+$", line) and not line.islower(),
+        "new_control": lambda line: re.match(r"(?!.*[()])\d+(:?\.\d+)*[a-zA-Z\s,\-:/\d]+$", line) and not line.islower(),
 
          "control_description": lambda line: {
             "val": re.match(r"^#*\s*control\s*$", line, re.IGNORECASE)
@@ -152,10 +152,10 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
         )
     },
 
-    "framework": {
-        "new_control": lambda line: re.match(r"^[A-Z0-9]+[\.\-][0-9]+\s(?!.*[a-z]).+$", line) or re.match(r"^\(\d+\)\s+(?!.*[a-z]).+$", line),
+    "framework-nistcsf": {
+        "new_control": lambda line: re.search(r"[A-Z][A-Za-z ,]+\([A-Za-z]{2}(\.[A-Z]{2})?\)", line) or re.search(r"[A-Z]{2}\.[A-Z]{2}(-[0-9]{2})?", line),
 
-        "control_description": lambda line: { "val": re.match(r"^#*\s*control\s*$", line, re.IGNORECASE) or re.match(r"^[A-Z0-9]+[\.\-][0-9]+\s(?!.*[a-z]).+$", line) or re.match(r"^\(\d+\)\s+(?!.*[a-z]).+$", line), "skip_line": False },
+        "control_description": lambda line: { "val": re.search(r"[A-Z][A-Za-z ,]+\([A-Za-z]{2}(\.[A-Z]{2})?\)", line) or re.search(r"[A-Z]{2}\.[A-Z]{2}(-[0-9]{2})?", line), "skip_line": False },
         "control_purpose": lambda line: { "val": False, "skip_line": True },
         "control_guidance": lambda line: { "val": False, "skip_line": True },
         "control_other_information": lambda line: { "val": False, "skip_line": True },
@@ -164,9 +164,37 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
 
         #control construct function
         "construct_control": lambda line: (
+            (cur_ref_code := cur_title.split('(')[1].replace(')', '')),
+            (cur_title := cur_title.split('(')[0].strip()),
+            (cur_slug := cur_ref_code.lower() + "-" + '-'.join(cur_title.lower().split()).replace(',', ''))
+        )
+        if ('(' in (cur_title := UTIL_regex_str_match(r"[A-Z][A-Za-z ,]+\([A-Za-z]{2}(\.[A-Z]{2})?\)", line)))
+        else (
+            (cur_ref_code := re.search(r"[A-Z]{2}\.[A-Z]{2}(-[0-9]{2})?", line)),
+            (cur_title := cur_ref_code.group(0)),
+            (cur_slug := cur_ref_code.group(0).lower())
+        )
+    },
+    "framework": {
+        "new_control": lambda line: re.match(r"^[A-Z0-9]+[\.\-][0-9]+\s(?!.*[a-z]).+$", line) or re.match(
+            r"^\(\d+\)\s+(?!.*[a-z]).+$", line),
+
+        "control_description": lambda line: {
+            "val": re.search(r"Control:", line) or re.match(r"^[A-Z0-9]+[\.\-][0-9]+\s(?!.*[a-z]).+$",
+                                                            line) or re.match(r"^\(\d+\)\s+(?!.*[a-z]).+$", line),
+            "skip_line": False},
+        "control_purpose": lambda line: {"val": False, "skip_line": True},
+        "control_guidance": lambda line: {"val": False, "skip_line": True},
+        "control_other_information": lambda line: {"val": False, "skip_line": True},
+        "control_means_of_verification": lambda line: {"val": False, "skip_line": True},
+        "control_attributes": lambda line: {"val": False, "skip_line": True},
+
+        # control construct function
+        "construct_control": lambda line: (
             (cur_ref_code := re.search(r"[A-Z0-9]+(:?[\.\-]\d+)*", line)),
             (cur_title := line[cur_ref_code.end() + 1:].strip()),
-            (cur_slug := cur_ref_code.group(0).lower() + "-" + '-'.join(re.sub(r"[,/()|]", "", cur_title.replace('-', ' ').lower()).split()))
+            (cur_slug := cur_ref_code.group(0).lower() + "-" + '-'.join(
+                re.sub(r"[,/()|]", "", cur_title.replace('-', ' ').lower()).split()))
         ),
 
         # optional levels regex definition in case the default delimiter count is not enough
@@ -182,7 +210,10 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
 # state machine parser function
 def parse_md(md_path: str, framework_details: dict) -> Dict:
     global G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS
-    SEQUENCE_STATE_CONDITIONS = G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS[framework_details["type"]]
+    seq_key = f'{framework_details["type"]}-{framework_details["name"]}'
+    SEQUENCE_STATE_CONDITIONS = G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS[
+        seq_key if seq_key in G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS else framework_details["type"]
+    ]
 
     control_levels = SEQUENCE_STATE_CONDITIONS[
         "control_levels"] if "control_levels" in SEQUENCE_STATE_CONDITIONS else None
@@ -252,7 +283,7 @@ def parse_md(md_path: str, framework_details: dict) -> Dict:
                     # print("ENTERED CONTROL: " + line + " | control = " + cur_ref_code.group(0) + ", title = '" + line[cur_ref_code.end() + 1:] + "'")
                     ref_code = cur_ref_code if isinstance(cur_ref_code, str) else cur_ref_code.group(0)
                     cur_control = ControlModel(
-                        # catalog_uuid=catalog.uuid,
+                        catalog_uuid=catalog.uuid,
                         ref_code=ref_code,
                         title=cur_title,
                         slug=cur_slug,
