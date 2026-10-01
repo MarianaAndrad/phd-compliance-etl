@@ -11,7 +11,7 @@ from schemas.control import ControlModel
 
 COMPLIANCE_DB_NAME = "complianceETL"
 
-async def persist_catalog(mongodb_client: AsyncMongoClient, database_name: str, catalog: CatalogModel) -> None:
+async def persist_catalog(mongodb_client: AsyncMongoClient, database_name: str, catalog: CatalogModel) -> str:
 
     '''catalog = await mongodb_client[database_name].get_collection(settings.DB_MONGO_CATALOGS_COLL).find_one(
         { "metadata.name": catalog.metadata.name }
@@ -33,7 +33,7 @@ async def persist_catalog(mongodb_client: AsyncMongoClient, database_name: str, 
     else:
         catalog = CatalogModel(**catalog) # create pydantic model instance from raw python dict'''
 
-    await mongodb_client[database_name].get_collection(settings.DB_MONGO_CATALOGS_COLL).update_one(
+    await mongodb_client[database_name].get_collection(settings.DB_MONGO_CATALOG_COLLECTION).update_one(
         {"metadata.name": catalog.metadata.name},
         {"$set": catalog.model_dump()},
         upsert=True,
@@ -50,7 +50,7 @@ async def persist_controls(mongodb_client: AsyncMongoClient, database_name: str,
         if not control.catalog_uuid:
             control.catalog_uuid = catalog_uuid
         payload = control.model_dump()
-        await mongodb_client[database_name].get_collection(settings.DB_MONGO_CONTROLS_COLL).update_one(
+        await mongodb_client[database_name].get_collection(settings.DB_MONGO_CONTROL_COLLECTION).update_one(
             {"slug": payload["slug"]}, #{"catalog_uuid": catalog_uuid, "slug": payload["slug"]},
             {"$set": payload},
             upsert=True,
