@@ -9,7 +9,7 @@ from core.config import settings
 from schemas.catalog import CatalogModel, MetadataModel
 from schemas.control import ControlModel
 
-COMPLIANCE_DB_NAME = "complianceETL"
+COMPLIANCE_DB_NAME = settings.DB_MONGO_NAME
 
 async def persist_catalog(mongodb_client: AsyncMongoClient, database_name: str, catalog: CatalogModel) -> str:
 

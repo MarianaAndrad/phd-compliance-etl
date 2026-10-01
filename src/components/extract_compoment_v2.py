@@ -107,8 +107,11 @@ def clean_text(text: str) -> str:
 
     return text.strip()
 
-def extract_metadata(source_document: str | Path) -> dict[str, str]:
+def extract_metadata(source_document: str | Path, metadata_file: str | Path) -> dict[str, str]:
     """Pull basic document metadata from the (original) PDF."""
+    with open(metadata_file, "r", encoding="utf-8") as f:
+        metadata = json.load(f)
+
     reader = PdfReader(source_document)
     meta = reader.metadata
 
@@ -118,8 +121,11 @@ def extract_metadata(source_document: str | Path) -> dict[str, str]:
 
     return {
         "document_name": Path(source_document).name,
-        "title": field("title"),
-        "author": field("author"),
+        "title": metadata.get("name", ""),
+        "author": metadata.get("publisher", ""),
+        "type": metadata.get("type", ""),
+        "version": metadata.get("version", ""),
+        "language": metadata.get("language", ""),
         "subject": field("subject"),
         "creation_date": field("creation_date"),
         "modification_date": field("modification_date"),
@@ -139,11 +145,11 @@ def write_to_file(file_path: str | Path, metadata: dict[str, str], content: str)
 
     logger.info("Wrote Markdown output to %s", file_path)
 
-def process_pdf(source_document: str | Path, output_file: str | Path, file_props: dict[str, Any]) -> None:
+def process_pdf(source_document: str | Path, output_file: str | Path, file_props: dict[str, Any], metadata_file: str | Path) -> None:
     """End-to-end pipeline: redact once, then derive Markdown + metadata from it."""
     redacted_path = redact_doc(source_document, file_props)
     markdown = convert_to_markdown(redacted_path)
-    metadata = extract_metadata(source_document)
+    metadata = extract_metadata(source_document, metadata_file)
     markdown_clean = clean_text(markdown)
     write_to_file(output_file, metadata, markdown_clean)
 
@@ -163,4 +169,4 @@ if __name__ == "__main__":
     for source_file in Path(DATA_FILES_DIR).glob("*.pdf"):
         output_file = Path(OUTPUT_DIR) / Path(source_file.name).with_suffix(".md")
         logger.info("Processing %s -> %s", source_file, output_file)
-        process_pdf(source_file, output_file, FILE_PROPS)
+        process_pdf(source_file, output_file, FILE_PROPS, metadata_file="../metadata.json")

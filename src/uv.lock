@@ -265,6 +265,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pymupdf" },
+    { name = "pymupdf-layout" },
     { name = "pymupdf4llm" },
     { name = "pypdf" },
 ]
@@ -280,7 +281,8 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "pymupdf", specifier = ">=1.28.2" },
-    { name = "pymupdf4llm", specifier = ">=1.28.2" },
+    { name = "pymupdf-layout", specifier = ">=1.28.2" },
+    { name = "pymupdf4llm", extras = ["layout"], specifier = ">=1.28.2" },
     { name = "pypdf", specifier = ">=6.14.2" },
 ]
 
