@@ -8,8 +8,9 @@ import json
 from components.extract_compoment import convert_to_markdown, extract_metadata, write_to_file
 from components.transform_compoment import parse_md, dump_cdm_instances
 from components.load_compoment import load_cdm_instances, persist_data
+from components.indexer import index_data
 
-from dependencies.database import get_db_client
+from dependencies.database import get_mongo_client, get_elasticsearch_client
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +27,10 @@ def load_metadata() -> dict:
 async def run_pipeline(data_path: str, output_path: str) -> None:
     pipeline_components = "all"
     if len(sys.argv) > 1 and sys.argv[1][:2] == "--":
-        if sys.argv[1][2:] in ["all", "extract", "transform", "load"]:
+        if sys.argv[1][2:] in ["all", "extract", "transform", "load", "index"]:
             pipeline_components = sys.argv[1][2:]
         else:
-            print("[ERROR] Unknown component argument, supported args: [--{all|extract|transform|load}]")
+            print("[ERROR] Unknown component argument, supported args: [--{all|extract|transform|load|index}]")
             return
 
     print("[INFO] Running " + pipeline_components + " component(s)")
@@ -62,7 +63,27 @@ async def run_pipeline(data_path: str, output_path: str) -> None:
 
         if framework_metadata is None:
             print("[ERROR] No metadata found for file '" + file +"'")
-            return
+            continue
+
+        """import time
+        times_arr = []
+		
+        for i in range(5):
+            start = time.time()
+
+            # load
+            if pipeline_components in ["load", "all"]:
+                mongodb_client = get_mongo_client()
+
+                cdm_instances = load_cdm_instances(cdm_file)
+                await persist_data(mongodb_client, framework_metadata["details"]["name"], cdm_instances)
+
+            end = time.time()
+            length = end - start
+            times_arr.append(length)
+
+        print("Average time:", sum(times_arr)/len(times_arr), "seconds")
+        continue"""
         
         # extract
         if pipeline_components in ["extract", "all"]:
@@ -77,11 +98,17 @@ async def run_pipeline(data_path: str, output_path: str) -> None:
         
         # load
         if pipeline_components in ["load", "all"]:
-            mongodb_client = get_db_client()
+            mongodb_client = get_mongo_client()
 
             cdm_instances = load_cdm_instances(cdm_file)
             await persist_data(mongodb_client, framework_metadata["details"]["name"], cdm_instances)
-    
+
+        # index
+        if pipeline_components in ["index", "all"]:
+            es_client = get_elasticsearch_client()
+
+            cdm_instances = load_cdm_instances(cdm_file)
+            index_data(es_client, cdm_instances)
 
 
 

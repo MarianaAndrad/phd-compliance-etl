@@ -9,7 +9,7 @@ from core.config import settings
 from schemas.catalog import CatalogModel, MetadataModel
 from schemas.control import ControlModel
 
-COMPLIANCE_DB_NAME = settings.DB_MONGO_NAME
+G_COMPLIANCE_DB_NAME = settings.DB_MONGO_NAME
 
 async def persist_catalog(mongodb_client: AsyncMongoClient, database_name: str, catalog: CatalogModel) -> str:
 
@@ -58,10 +58,10 @@ async def persist_controls(mongodb_client: AsyncMongoClient, database_name: str,
     
 
 async def persist_data(mongodb_client: AsyncMongoClient, framework_name: str, cdm_instances: Dict):
-    global COMPLIANCE_DB_NAME
+    global G_COMPLIANCE_DB_NAME
 
-    catalog_uuid = await persist_catalog(mongodb_client, COMPLIANCE_DB_NAME, cdm_instances["catalog"])
-    await persist_controls(mongodb_client, COMPLIANCE_DB_NAME, catalog_uuid, cdm_instances["controls_list"])
+    catalog_uuid = await persist_catalog(mongodb_client, G_COMPLIANCE_DB_NAME, cdm_instances["catalog"])
+    await persist_controls(mongodb_client, G_COMPLIANCE_DB_NAME, catalog_uuid, cdm_instances["controls_list"])
 
 
 def load_cdm_instances(cdm_path: str) -> dict[str, CatalogModel | list[Any]]:
