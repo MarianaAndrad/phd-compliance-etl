@@ -232,9 +232,7 @@ def convert_to_markdown(source_document: str, file_props: dict) -> str:
             return "\n" + _generate_table_markdown(pending_table.extract())
         return ""
 
-    doc = pymupdf.open(source_document)
-
-    def _filter_false_positive_tables(tables):
+    def _filter_out_false_positive_tables(tables):
         verified_tables = []
         for table in tables:
             total_cells = sum(1 for row in table.extract() for cell in row)
@@ -254,10 +252,12 @@ def convert_to_markdown(source_document: str, file_props: dict) -> str:
 
         return verified_tables
 
+    doc = pymupdf.open(source_document)
+
     doc_content = ""
     for page in doc:
 
-        tables = page.find_tables()
+        tables = _filter_out_false_positive_tables(page.find_tables())
         intersected_table = None
         intersected_tables_list = []
         pending_table = None
@@ -277,18 +277,6 @@ def convert_to_markdown(source_document: str, file_props: dict) -> str:
         prev_block_text = ""
 
         #print(page.rect.width, page.rect.height)
-
-        #drawings = page.get_drawings()
-        #print(page)
-        #for drawing in drawings:
-            #if drawing["items"][0][0] == "re" and not (drawing["fill"][0] == 0.0 or drawing["fill"][1] == 0.0 or drawing["fill"][2] == 0.0):
-                #print(drawing["rect"].width, drawing["rect"].height)
-            #for item in drawing["items"]:
-
-        #for table in tables:
-        #    print(table.to_markdown(), "\n-------------------------\n",table.bbox)
-
-        tables = _filter_false_positive_tables(tables)
 
         for block in blocks:
             block_text = ""
