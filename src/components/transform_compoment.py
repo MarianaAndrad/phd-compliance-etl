@@ -242,6 +242,8 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
 def parse_md(md_path: str, framework_details: dict) -> Dict:
     global G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS
     SEQUENCE_STATE_CONDITIONS = G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS[framework_details["name"]]
+    global G_BASE_CONTROL_DELIMITER_COUNT
+    G_BASE_CONTROL_DELIMITER_COUNT = None
 
     control_levels = SEQUENCE_STATE_CONDITIONS["control_levels"] if "control_levels" in SEQUENCE_STATE_CONDITIONS else None
     
