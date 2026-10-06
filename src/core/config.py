@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "qwen3.5:4b"
 
     # Elasticsearch
-    ES_BASE_URL: str = "https://localhost:9200"
+    ES_BASE_URL: str = "http://localhost:9200"
     ES_USERNAME: str = ""
     ES_PASSWORD: str = ""
 
