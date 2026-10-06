@@ -4,11 +4,14 @@ import os
 import sys
 import json
 
+import pymongo
+from pymongo.errors import PyMongoError
 
 from components.extract_compoment import convert_to_markdown, extract_metadata, write_to_file
 from components.transform_compoment import parse_md, dump_cdm_instances
 from components.load_compoment import load_cdm_instances, persist_data
 from components.indexer import index_data
+from components.validation_compoment import validate_cdm_instances, dump_validation_report
 
 from dependencies.database import get_mongo_client, get_elasticsearch_client
 
@@ -24,13 +27,21 @@ def load_metadata() -> dict:
 
     return metadata
 
+async def is_mongo_available(mongodb_client, timeout_s: float = 5) -> bool:
+    try:
+        with pymongo.timeout(timeout_s):
+            await mongodb_client.admin.command("ping")
+        return True
+    except PyMongoError:
+        return False
+
 async def run_pipeline(data_path: str, output_path: str) -> None:
     pipeline_components = "all"
     if len(sys.argv) > 1 and sys.argv[1][:2] == "--":
-        if sys.argv[1][2:] in ["all", "extract", "transform", "load", "index"]:
+        if sys.argv[1][2:] in ["all", "extract", "transform", "validate", "load", "index"]:
             pipeline_components = sys.argv[1][2:]
         else:
-            print("[ERROR] Unknown component argument, supported args: [--{all|extract|transform|load|index}]")
+            print("[ERROR] Unknown component argument, supported args: [--{all|extract|transform|validate|load|index}]")
             return
 
     print("[INFO] Running " + pipeline_components + " component(s)")
@@ -45,6 +56,7 @@ async def run_pipeline(data_path: str, output_path: str) -> None:
         base_name = os.path.splitext(file)[0]
         markdown_file = os.path.join(output_path, "01-markdown", f"{base_name}.md")
         cdm_file = os.path.join(output_path, "02-cdm-instances", f"{base_name}.json")
+        validation_file = os.path.join(output_path, "03-validation", f"{base_name}.json")
         #print("file:", file + "\ninput_file:", input_file + "\nbase_name:", base_name + "\nmarkdown_file:", markdown_file + "\ncdm_file:", cdm_file)
         
         # find metadata for current file
@@ -95,13 +107,22 @@ async def run_pipeline(data_path: str, output_path: str) -> None:
         if pipeline_components in ["transform", "all"]:
             cdm_instances = parse_md(markdown_file, framework_metadata["details"])
             dump_cdm_instances(cdm_file, cdm_instances)
+
+        if pipeline_components in ["validate", "all"]:
+            cdm_instances = load_cdm_instances(cdm_file)
+            validation_results = validate_cdm_instances(markdown_file, cdm_instances, framework_metadata["details"])
+            validation_summary = dump_validation_report(validation_file, validation_results)
+            print("[INFO] Validation summary for '" + file + "':", validation_summary)
         
         # load
         if pipeline_components in ["load", "all"]:
             mongodb_client = get_mongo_client()
 
-            cdm_instances = load_cdm_instances(cdm_file)
-            await persist_data(mongodb_client, framework_metadata["details"]["name"], cdm_instances)
+            if await is_mongo_available(mongodb_client):
+                cdm_instances = load_cdm_instances(cdm_file)
+                await persist_data(mongodb_client, framework_metadata["details"]["name"], cdm_instances)
+            else:
+                print("[ERROR] Could not connect to MongoDB, skipping load for file '" + file + "'")
 
         # index
         if pipeline_components in ["index", "all"]:
