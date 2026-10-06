@@ -1,0 +1,7 @@
+# To allow connections from remote users, set this parameter to a non-loopback address.
+server.host: "0.0.0.0"
+
+# Elasticsearch connection (hosts, username, password) is provided through the
+# ELASTICSEARCH_* environment variables in docker-compose.yaml, so no secrets
+# live here. Kibana connects as the built-in "kibana_system" user; log in to the
+# Kibana UI itself with the "elastic" user and ES_PASSWORD.
