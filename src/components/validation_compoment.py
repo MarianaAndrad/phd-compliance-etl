@@ -15,6 +15,9 @@ from components.transform_compoment import G_FRAMEWORKS_SEQUENCE_STATE_CONDITION
 
 logger = logging.getLogger(__name__)
 
+# fields derived from the document hierarchy (checked deterministically, see check_derived_fields) or internal ids, hidden from the judge
+G_JUDGE_EXCLUDED_FIELDS = {"catalog_uuid", "citers", "slug", "parent_slug", "category"}
+
 # max characters of source text sent to the judge for a single control (keeps the prompt inside the model context)
 G_MAX_SOURCE_CHARS = 12000
 
@@ -26,19 +29,14 @@ Look specifically for:
 - hallucinated content: text in the structured control that is not present in the source text;
 - missing content: information of this control present in the source text but absent from the structured fields;
 - misplaced content: text stored in the wrong field (e.g. guidance stored as description, or text belonging to another control);
-- an incoherent ref_code, title or slug given the source text.
+- an incoherent ref_code or title given the source text.
 
 Ignore differences in whitespace, line breaks, hyphenation, page break markers and table formatting.
 The attributes table of the source text is expected to be stored in the "attributes" field as lowercase tags,
 and the section headers ("Control", "Purpose", "Guidance", "Other information") are not part of the content.
 NOTE paragraphs and lists belong to the field of the section they appear in.
-
-Some fields are DERIVED from the document hierarchy and are NOT expected to appear in the source text:
-- slug: ref_code followed by the title in lowercase, joined by hyphens;
-- parent_slug: slug of the enclosing control (e.g. "9.2" for "9.2.1"), null for top-level controls;
-- category: title of the top-level ancestor control; for a top-level control it must be equal to its own title.
-Only check these derived fields for coherence with the ref_code and title, never for presence in the source text.
-Fields left empty because the source text has no such section are correct.
+Fields left empty because the source text has no such section are correct (e.g. a clause heading with no content).
+Judge only the fields present in the structured control; do not report fields that are not shown.
 
 First write a short justification and list the concrete issues, THEN decide the verdict:
 'fail' if there is any hallucinated, missing or misplaced content, 'pass' otherwise.
@@ -167,12 +165,16 @@ def validate_control(judge_llm, control: ControlModel, source_context: str) -> C
 
     Raises if the judge call fails or returns no structured output.
     """
-    system_message = SystemMessage(content=G_JUDGE_SYSTEM_PROMPT + json.dumps(ControlModel.model_json_schema()))
+    schema = ControlModel.model_json_schema()
+    schema["properties"] = {k: v for k, v in schema["properties"].items() if k not in G_JUDGE_EXCLUDED_FIELDS}
+    schema["required"] = [k for k in schema.get("required", []) if k not in G_JUDGE_EXCLUDED_FIELDS]
+
+    system_message = SystemMessage(content=G_JUDGE_SYSTEM_PROMPT + json.dumps(schema))
     human_message = HumanMessage(content=(
         'SOURCE TEXT (ground truth, as extracted from the original document):\n"""\n'
         + source_context
         + '\n"""\n\nSTRUCTURED CONTROL PRODUCED BY THE TRANSFORM STEP:\n'
-        + control.model_dump_json(indent=2, exclude={"catalog_uuid", "citers"})
+        + control.model_dump_json(indent=2, exclude=G_JUDGE_EXCLUDED_FIELDS)
         + '\n\nJudge whether this structured control faithfully and completely represents the source text above.'
     ))
 
@@ -180,6 +182,33 @@ def validate_control(judge_llm, control: ControlModel, source_context: str) -> C
     if judgement is None:
         raise ValueError("empty structured output")
     return judgement
+
+
+def check_derived_fields(control: ControlModel, controls_by_slug: Dict[str, ControlModel]) -> List[str]:
+    """Checks the hierarchy-derived fields (slug, parent_slug, category), which an LLM judge cannot verify from the source span."""
+    issues = []
+
+    if UTIL_norm_line(control.slug) != UTIL_norm_line(f"{control.ref_code} {control.title}"):
+        issues.append(f"slug '{control.slug}' does not match ref_code '{control.ref_code}' and title '{control.title}'.")
+
+    if control.parent_slug is None:
+        if control.category != control.title:
+            issues.append(f"category '{control.category}' of top-level control should be its own title '{control.title}'.")
+        return issues
+
+    if control.parent_slug not in controls_by_slug:
+        issues.append(f"parent_slug '{control.parent_slug}' does not match any extracted control.")
+        return issues
+
+    # walk up to the top-level ancestor (bounded, in case of a parent cycle)
+    root, seen = controls_by_slug[control.parent_slug], {control.slug}
+    while root.parent_slug in controls_by_slug and root.slug not in seen:
+        seen.add(root.slug)
+        root = controls_by_slug[root.parent_slug]
+    if control.category != root.title:
+        issues.append(f"category '{control.category}' should be the top-level ancestor title '{root.title}'.")
+
+    return issues
 
 
 def UTIL_get_doc_bounds(framework_details: dict) -> Tuple[Optional[Callable[[str], Any]], Optional[Callable[[str], Any]]]:
@@ -199,6 +228,7 @@ def validate_cdm_instances(md_path: str, cdm_instances: Dict, framework_details:
     judge_llm = judge_llm or build_judge_llm()
 
     spans = locate_control_spans(source_lines, controls_list, *UTIL_get_doc_bounds(framework_details))
+    controls_by_slug = {c.slug: c for c in controls_list}
 
     results = []
     for control, span in tqdm(list(zip(controls_list, spans)), desc="Validating controls"):
@@ -231,7 +261,13 @@ def validate_cdm_instances(md_path: str, cdm_instances: Dict, framework_details:
             ))
             continue
 
-        results.append(ControlValidationResult(**result, **judgement.model_dump()))
+        # derived field errors are deterministic, so they override a judge 'pass'
+        judgement_dict = judgement.model_dump()
+        if derived_issues := check_derived_fields(control, controls_by_slug):
+            judgement_dict["verdict"] = ValidationStatus.FAIL
+            judgement_dict["issues"] = derived_issues + judgement_dict["issues"]
+
+        results.append(ControlValidationResult(**result, **judgement_dict))
 
     return results
 
