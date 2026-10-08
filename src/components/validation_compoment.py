@@ -15,8 +15,11 @@ from components.transform_compoment import G_FRAMEWORKS_SEQUENCE_STATE_CONDITION
 
 logger = logging.getLogger(__name__)
 
-# fields derived from the document hierarchy (checked deterministically, see check_derived_fields) or internal ids, hidden from the judge
-G_JUDGE_EXCLUDED_FIELDS = {"catalog_uuid", "citers", "slug", "parent_slug", "category"}
+# fields checked deterministically (see check_derived_fields and check_attributes) or internal ids, hidden from the judge
+G_JUDGE_EXCLUDED_FIELDS = {"catalog_uuid", "citers", "slug", "parent_slug", "category", "attributes"}
+
+# a 'fail' with no listed issue is an inconsistent judgement, so the judge is asked again up to this many times
+G_JUDGE_MAX_ATTEMPTS = 2
 
 # max characters of source text sent to the judge for a single control (keeps the prompt inside the model context)
 G_MAX_SOURCE_CHARS = 12000
@@ -31,15 +34,22 @@ Look specifically for:
 - misplaced content: text stored in the wrong field (e.g. guidance stored as description, or text belonging to another control);
 - an incoherent ref_code or title given the source text.
 
-Ignore differences in whitespace, line breaks, hyphenation, page break markers and table formatting.
-The attributes table of the source text is expected to be stored in the "attributes" field as lowercase tags,
-and the section headers ("Control", "Purpose", "Guidance", "Other information") are not part of the content.
-NOTE paragraphs and lists belong to the field of the section they appear in.
+Ignore differences in whitespace, line breaks, hyphenation, letter case, page break markers and table formatting.
+The section headers ("Control", "Purpose", "Guidance", "Other information") are not part of the content.
+NOTE paragraphs, lists and tables belong to the field of the section they appear in.
+
+The attributes table that may follow the control heading is validated separately, ignore it.
+When the source gives no separate name for a control (e.g. "o GV.OC-01: Statement..."), the "title" is set to the
+ref_code by design and the statement is stored in "description"; this is correct and must never be reported as an issue.
+Documents cited inside the text (e.g. "(see 8.10)", "ISO/IEC 27040") stay in the text of their section and are NOT
+expected in "references"; "references" and "means_of_verifiction" are only filled when the source text has a
+dedicated section for them, so leaving them empty is correct.
 Fields left empty because the source text has no such section are correct (e.g. a clause heading with no content).
 Judge only the fields present in the structured control; do not report fields that are not shown.
 
 First write a short justification and list the concrete issues, THEN decide the verdict:
 'fail' if there is any hallucinated, missing or misplaced content, 'pass' otherwise.
+Every 'fail' must be backed by at least one issue quoting the offending text; if you cannot quote one, the verdict is 'pass'.
 
 Schema of the structured control:
 """
@@ -178,9 +188,16 @@ def validate_control(judge_llm, control: ControlModel, source_context: str) -> C
         + '\n\nJudge whether this structured control faithfully and completely represents the source text above.'
     ))
 
-    judgement = judge_llm.invoke([system_message, human_message])
-    if judgement is None:
-        raise ValueError("empty structured output")
+    for _ in range(G_JUDGE_MAX_ATTEMPTS):
+        judgement = judge_llm.invoke([system_message, human_message])
+        if judgement is None:
+            raise ValueError("empty structured output")
+        if judgement.verdict == JudgeVerdict.PASS or judgement.issues:
+            return judgement
+        logger.info("Judge returned 'fail' without issues for control '%s', retrying", control.slug)
+
+    # still unsupported after retrying: keep the fail, but flag it so it can be reviewed by hand
+    judgement.issues = ["Judge returned 'fail' without listing a concrete issue (needs manual review)."]
     return judgement
 
 
@@ -188,7 +205,9 @@ def check_derived_fields(control: ControlModel, controls_by_slug: Dict[str, Cont
     """Checks the hierarchy-derived fields (slug, parent_slug, category), which an LLM judge cannot verify from the source span."""
     issues = []
 
-    if UTIL_norm_line(control.slug) != UTIL_norm_line(f"{control.ref_code} {control.title}"):
+    # controls without a name of their own use the ref_code as title, and then the slug is just the ref_code
+    expected_slug = control.ref_code if control.title in ("", control.ref_code) else f"{control.ref_code} {control.title}"
+    if UTIL_norm_line(control.slug) != UTIL_norm_line(expected_slug):
         issues.append(f"slug '{control.slug}' does not match ref_code '{control.ref_code}' and title '{control.title}'.")
 
     if control.parent_slug is None:
@@ -209,6 +228,36 @@ def check_derived_fields(control: ControlModel, controls_by_slug: Dict[str, Cont
         issues.append(f"category '{control.category}' should be the top-level ancestor title '{root.title}'.")
 
     return issues
+
+
+def UTIL_table_cells(row: str) -> List[str]:
+    return [cell.strip() for cell in row.split('|') if any(char.isalnum() for char in cell)]
+
+
+def check_attributes(control: ControlModel, span_lines: List[str]) -> List[str]:
+    """Compares the attributes with the table right below the control heading (ISO style: header row of keys,
+    then rows of "#Value" tags), which can be checked exactly instead of relying on the LLM judge.
+    """
+    rows = []
+    for line in span_lines[1:]:
+        line = line.strip()
+        if not line or "PAGE_BREAK" in line:
+            continue
+        if not line.startswith('|'):
+            break
+        rows.append(line)
+
+    expected: List[Dict[str, List[str]]] = []
+    if rows:
+        # same normalization as the transform: words split by line breaks are joined back ("do- mains", "Ecosys- tem")
+        expected = [{'_'.join(key.lower().replace('- ', '').split()): []} for key in UTIL_table_cells(rows[0])]
+        for row in rows[1:]:
+            for ind, cell in enumerate(UTIL_table_cells(row)[:len(expected)]):
+                next(iter(expected[ind].values())).extend(re.sub(r"[ -]", "", tag) for tag in cell.lower().split('#') if tag.strip())
+
+    if control.attributes != expected:
+        return [f"attributes {control.attributes} do not match the source attributes table {expected}."]
+    return []
 
 
 def UTIL_get_doc_bounds(framework_details: dict) -> Tuple[Optional[Callable[[str], Any]], Optional[Callable[[str], Any]]]:
@@ -263,7 +312,7 @@ def validate_cdm_instances(md_path: str, cdm_instances: Dict, framework_details:
 
         # derived field errors are deterministic, so they override a judge 'pass'
         judgement_dict = judgement.model_dump()
-        if derived_issues := check_derived_fields(control, controls_by_slug):
+        if derived_issues := check_derived_fields(control, controls_by_slug) + check_attributes(control, source_lines[span[0]:span[1]]):
             judgement_dict["verdict"] = ValidationStatus.FAIL
             judgement_dict["issues"] = derived_issues + judgement_dict["issues"]
 
@@ -312,3 +361,7 @@ if __name__ == "__main__":
 
     results = validate_cdm_instances(document_path, load_cdm_instances(cdm_file), {"name": "iso27002"})
     print(dump_validation_report(report_file, results))
+
+
+
+# NOTAS PERGUNTAR AO LUIS SE DAR WRITE VERIFICATION PER CONTROL IS BETTER IN MEMORY OR WRITE ALL AT ONCE IN THE END, FOR NOW WRITE ALL AT ONCE IN THE END

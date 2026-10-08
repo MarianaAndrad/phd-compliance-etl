@@ -343,7 +343,7 @@ def parse_md(md_path: str, framework_details: dict) -> Dict:
 
                     # reading attribute keys (table header for ISOs)
                     if len(cur_control.attributes) == 0:
-                        cur_control.attributes = [{'_'.join(k.split(' ')): []} for k in tags]
+                        cur_control.attributes = [{'_'.join(k.split(' ')): []} for k in tags]  # join words hyphenated by line breaks (e.g. "security do- mains")
                     # reading attribute values (table body for ISOs)
                     elif len(tags) > 0:
                         ind = 0
