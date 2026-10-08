@@ -108,6 +108,7 @@ async def run_pipeline(data_path: str, output_path: str) -> None:
             cdm_instances = parse_md(markdown_file, framework_metadata["details"])
             dump_cdm_instances(cdm_file, cdm_instances)
 
+        # validate
         if pipeline_components in ["validate", "all"]:
             cdm_instances = load_cdm_instances(cdm_file)
             validation_results = validate_cdm_instances(markdown_file, cdm_instances, framework_metadata["details"])
@@ -127,7 +128,6 @@ async def run_pipeline(data_path: str, output_path: str) -> None:
         # index
         if pipeline_components in ["index", "all"]:
             es_client = get_elasticsearch_client()
-
             cdm_instances = load_cdm_instances(cdm_file)
             index_data(es_client, cdm_instances)
 
