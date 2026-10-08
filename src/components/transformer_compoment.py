@@ -9,7 +9,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, create_model, Field
 from tqdm import tqdm
 
-from dependencies.database import get_database
+from dependencies.database import get_mongo_client as get_database
 from dependencies.llm import build_llm, build_structured_llm
 
 logger = logging.getLogger(__name__)

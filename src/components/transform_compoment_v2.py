@@ -1,11 +1,7 @@
-# from dependencies.database import get_database
-
 import re
 import json
-import asyncio
 
 from uuid import uuid4
-from pydantic import BaseModel, ConfigDict, Field
 from typing import Dict
 from enum import Enum
 
@@ -21,8 +17,7 @@ def UTIL_is_phrase_continuity(prev_str, next_str):
         return True
 
     # NOTE: Fix missing "\n" case: "(...) the value for the assignment operation can be \"none.\"\nRelated Controls: AC-8, IA-2, PL-2."
-    if prev_str_last_word[-1][-1] == '"' and (
-            next_str_first_word[0][0].isupper() and not next_str_first_word[0].isupper()):
+    if prev_str_last_word[-1][-1] == '"' and (next_str_first_word[0][0].isupper() and not next_str_first_word[0].isupper()):
         return False
 
     # if '.' not in prev_str_last_word and next_str_first_word[0][0].isupper():
@@ -34,9 +29,7 @@ def UTIL_is_phrase_continuity(prev_str, next_str):
 def UTIL_is_list_item_start(strg):
     return (not not re.match(r"\((?:[a-z]|\d+)\)\s+", strg)) or (not not re.match(r"(?:[a-z]|\d+)[\.\)]\s+", strg))
 
-
 G_IN_ITEM_LIST = False
-
 
 def UTIL_update_text_state(strg):
     global G_IN_ITEM_LIST
@@ -103,10 +96,9 @@ def UTIL_get_control_lvl(control, control_levels):
         G_BASE_CONTROL_DELIMITER_COUNT = sum(ref_code.count(c) for c in control_delimiters)
 
     if control is not None:
-        return sum(ref_code.count(c) for c in control_delimiters) + 1 - G_BASE_CONTROL_DELIMITER_COUNT
+        return sum(ref_code.count(c) for c in control_delimiters) - G_BASE_CONTROL_DELIMITER_COUNT
 
     return None
-
 
 def UTIL_regex_str_match(regex, str):
     match = re.search(regex, str)
@@ -116,9 +108,8 @@ def UTIL_regex_str_match(regex, str):
 
     return ''
 
-
 class ControlStates(Enum):
-    NONE = 0
+    NONE  = 0
     START = 1
     DESCRIPTION = 2
     PURPOSE = 3
@@ -238,8 +229,8 @@ def parse_md(md_path: str, framework_details: dict) -> Dict:
             if cur_control.other_information and cur_control.other_information[-1] in ['\n', ' ']:
                 cur_control.other_information = cur_control.other_information[:-1]
 
-            # level 1 controls are root parents
-            if UTIL_get_control_lvl(cur_control, control_levels) > 1:
+            # level 0 controls are root parents
+            if UTIL_get_control_lvl(cur_control, control_levels) > 0:
                 cur_control.parent_slug = parent_controls[UTIL_get_control_lvl(cur_control, control_levels) - 1].slug
 
             # update parent control levels dict
@@ -287,7 +278,7 @@ def parse_md(md_path: str, framework_details: dict) -> Dict:
                         ref_code=ref_code,
                         title=cur_title,
                         slug=cur_slug,
-                        category=parent_controls[1].title if 1 in parent_controls
+                        category=parent_controls[0].title if 0 in parent_controls
                                                              and UTIL_get_control_lvl(ref_code,
                                                                                       control_levels) > G_BASE_CONTROL_DELIMITER_COUNT else cur_title
                     )
