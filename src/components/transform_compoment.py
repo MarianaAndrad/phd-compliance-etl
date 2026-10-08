@@ -95,7 +95,7 @@ def UTIL_get_control_lvl(control, control_levels):
         G_BASE_CONTROL_DELIMITER_COUNT = sum(ref_code.count(c) for c in control_delimiters)
 
     if control is not None:
-        return sum(ref_code.count(c) for c in control_delimiters) + 1 - G_BASE_CONTROL_DELIMITER_COUNT
+        return sum(ref_code.count(c) for c in control_delimiters) - G_BASE_CONTROL_DELIMITER_COUNT
 
     return None
 
@@ -230,9 +230,9 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
 
         # optional levels regex definition in case the default delimiter count is not enough
         "control_levels": {
-            1: lambda line: re.match(r"^[0-9]+\.[0-9]+", line),
-            2: lambda line: re.match(r"^[A-Z]+\-[0-9]+", line),
-            3: lambda line: re.match(r"^[0-9]+", line)
+            0: lambda line: re.match(r"^[0-9]+\.[0-9]+", line),
+            1: lambda line: re.match(r"^[A-Z]+\-[0-9]+", line),
+            2: lambda line: re.match(r"^[0-9]+", line)
         }
     }
 }
@@ -242,6 +242,8 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
 def parse_md(md_path: str, framework_details: dict) -> Dict:
     global G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS
     SEQUENCE_STATE_CONDITIONS = G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS[framework_details["name"]]
+    global G_BASE_CONTROL_DELIMITER_COUNT
+    G_BASE_CONTROL_DELIMITER_COUNT = None
 
     control_levels = SEQUENCE_STATE_CONDITIONS["control_levels"] if "control_levels" in SEQUENCE_STATE_CONDITIONS else None
     
@@ -265,8 +267,8 @@ def parse_md(md_path: str, framework_details: dict) -> Dict:
             if cur_control.other_information and cur_control.other_information[-1] in ['\n', ' ']:
                 cur_control.other_information = cur_control.other_information[:-1]
 
-            # level 1 controls are root parents
-            if UTIL_get_control_lvl(cur_control, control_levels) > 1:
+            # level 0 controls are root parents
+            if UTIL_get_control_lvl(cur_control, control_levels) > 0:
                 cur_control.parent_slug = parent_controls[UTIL_get_control_lvl(cur_control, control_levels) - 1].slug
 
             # update parent control levels dict
@@ -314,7 +316,7 @@ def parse_md(md_path: str, framework_details: dict) -> Dict:
                         ref_code=ref_code,
                         title=cur_title,
                         slug=cur_slug,
-                        category=parent_controls[1].title if 1 in parent_controls
+                        category=parent_controls[0].title if 0 in parent_controls
                             and UTIL_get_control_lvl(ref_code, control_levels) > G_BASE_CONTROL_DELIMITER_COUNT else cur_title
                     )
 
