@@ -166,7 +166,7 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
         
         "control_description": lambda line: { "val": re.match(r"(?!.*[()])\d+(:?\.\d+)*[a-zA-Z\s,\-:/\d]+$", line) and not line.islower(), "skip_line": True },
         "control_purpose": lambda line: { "val": False, "skip_line": True },
-        "control_guidance": lambda line: { "val": False, "skip_line": True },
+        "control_guidance": lambda line: { "val": re.match(r"Implementation guidance:?$", line), "skip_line": True },
         "control_other_information": lambda line: { "val": False, "skip_line": True },
         "control_means_of_verification": lambda line: { "val": False, "skip_line": True },
         "control_attributes": lambda line: { "val": False, "skip_line": True },
@@ -221,7 +221,7 @@ G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS = {
         "construct_control": lambda line: (
             (cur_ref_code := re.search(r"[A-Z0-9]+(:?[\.\-]\d+)*", line)),
             (cur_title := line[cur_ref_code.end() + 1:].strip()),
-            (cur_slug := cur_ref_code.group(0).lower() + "-" + '-'.join(re.sub(r"[,/()|]", "", cur_title.replace('-', ' ').lower()).split()))
+            (cur_slug := cur_ref_code.group(0).lower() + "-" + '-'.join(re.sub(r"[,()|]", "", re.sub(r"[-/]", " ", cur_title).lower()).split()))
         ),
 
         # optional levels regex definition in case the default delimiter count is not enough
