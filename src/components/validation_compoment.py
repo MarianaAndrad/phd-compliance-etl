@@ -42,12 +42,7 @@ When the source gives no separate name for a control (e.g. "o GV.OC-01: Statemen
 ref_code by design and the statement is stored in "description"; this is correct and must never be reported as an issue.
 Documents cited inside the text (e.g. "(see 8.10)", "ISO/IEC 27040") stay in the text of their section.
 "references" and "means_of_verification" are not extracted and are always left empty; this is correct and must never
-be reported as missing content. If the source text contains references or means of verification, record them in
-"issues" as informational issues prefixed with "[info]", stating what was found and which field it should have been
-placed in (e.g. "[info] 'ISO/IEC 27040' cited in description should be in references" or "[info] the source lists
-means of verification that should be in means_of_verification").
-[info] issues are never missing content and must not affect the verdict: a control whose only issues are [info] issues
-is a 'pass'.
+be reported as missing content.
 Fields left empty because the source text has no such section are correct (e.g. a clause heading with no content).
 Judge only the fields present in the structured control; do not report fields that are not shown.
 
