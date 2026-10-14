@@ -30,5 +30,63 @@ services:
       db-mongo:
         condition: service_healthy
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.4
+    restart: always
+    environment:
+      - discovery.type=single-node
+      - ELASTIC_PASSWORD=${ES_PASSWORD}
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      # security (basic auth) stays on, but HTTP-layer TLS is explicitly off:
+      # the image's TLS auto-configuration writes certs under /config, which
+      # isn't volume-mounted, so it silently stops re-enabling TLS on every
+      # container recreation while reusing the persisted /data volume below.
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      # disables the disk-watermark allocation guard, needed on dev machines
+      # that run low on free disk space; remove once disk headroom is fixed
+      - cluster.routing.allocation.disk.threshold_enabled=false
+    volumes:
+      - 'es_data:/usr/share/elasticsearch/data'
+    ports:
+      - ${ES_PORT}:9200
+    env_file:
+      - .env
+    healthcheck:
+      test: curl -sf -u elastic:${ES_PASSWORD} http://localhost:9200/_cluster/health | grep -qE '"status":"(green|yellow)"'
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # one-shot job: Kibana 8+ refuses to run as the "elastic" superuser, so set
+  # the password of the built-in "kibana_system" user for Kibana to use instead
+  kibana-setup:
+    image: curlimages/curl:latest
+    restart: "no"
+    command: >
+      -sf -u elastic:${ES_PASSWORD}
+      -X POST http://elasticsearch:9200/_security/user/kibana_system/_password
+      -H "Content-Type: application/json"
+      -d '{"password":"${KIBANA_PASSWORD}"}'
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.5.4
+    restart: always
+    volumes:
+      - ./kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
+    ports:
+      - ${KIBANA_PORT:-5601}:5601
+    depends_on:
+      kibana-setup:
+        condition: service_completed_successfully
+
 volumes:
   db_mongo_data:
+  es_data:

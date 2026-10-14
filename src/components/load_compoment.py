@@ -1,35 +1,77 @@
-from typing import List
+import json
 
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from typing import Dict, List, Any
 
-from schemas.catalog import Metadata
-from schemas.control import Control
+from pymongo import AsyncMongoClient
 
+from core.config import settings
 
-async def persist_metadata(db: AsyncIOMotorDatabase, catalog_uuid: str, metadata: Metadata) -> None:
-    """Upserts the catalog-level metadata document."""
+from schemas.catalog import CatalogModel, MetadataModel
+from schemas.control import ControlModel
 
-    await db.catalogs.update_one(
-        {"uuid": catalog_uuid},
-        {"$set": {"uuid": catalog_uuid, "metadata": metadata.model_dump(by_alias=True)}},
+G_COMPLIANCE_DB_NAME = settings.DB_MONGO_NAME
+
+async def persist_catalog(mongodb_client: AsyncMongoClient, database_name: str, catalog: CatalogModel) -> str:
+
+    '''catalog = await mongodb_client[database_name].get_collection(settings.DB_MONGO_CATALOGS_COLL).find_one(
+        { "metadata.name": catalog.metadata.name }
+    )
+    #print(catalog)
+
+    if catalog is None:
+        metadata = MetadataModel(
+            type="standard",
+            name=framework_name,
+            publisher="ISO/IEC"
+        )
+        catalog = CatalogModel(
+            uuid=str(uuid4()),
+            metadata=metadata
+        )
+
+        result = await mongodb_client[database_name].get_collection(settings.DB_MONGO_CATALOGS_COLL).insert_one(catalog.model_dump())
+    else:
+        catalog = CatalogModel(**catalog) # create pydantic model instance from raw python dict'''
+
+    await mongodb_client[database_name].get_collection(settings.DB_MONGO_CATALOG_COLLECTION).update_one(
+        {"metadata.name": catalog.metadata.name},
+        {"$set": catalog.model_dump()},
         upsert=True,
     )
 
+    return catalog.uuid
 
-async def persist_controls(db: AsyncIOMotorDatabase, catalog_uuid: str, controls: List[Control]) -> None:
+
+async def persist_controls(mongodb_client: AsyncMongoClient, database_name: str, catalog_uuid: str, controls_list: List[ControlModel]) -> None:
     """Upserts each control, keyed by (catalog_uuid, slug) so re-running the
     extraction on the same document does not create duplicates."""
 
-    for control in controls:
-        await db.controls.update_one(
-            {"catalog_uuid": catalog_uuid, "slug": control.slug},
-            {"$set": control.model_dump()},
+    for control in controls_list:
+        if not control.catalog_uuid:
+            control.catalog_uuid = catalog_uuid
+        payload = control.model_dump()
+        await mongodb_client[database_name].get_collection(settings.DB_MONGO_CONTROL_COLLECTION).update_one(
+            {"slug": payload["slug"]}, #{"catalog_uuid": catalog_uuid, "slug": payload["slug"]},
+            {"$set": payload},
             upsert=True,
         )
+    
+
+async def persist_data(mongodb_client: AsyncMongoClient, framework_name: str, cdm_instances: Dict):
+    global G_COMPLIANCE_DB_NAME
+
+    catalog_uuid = await persist_catalog(mongodb_client, G_COMPLIANCE_DB_NAME, cdm_instances["catalog"])
+    await persist_controls(mongodb_client, G_COMPLIANCE_DB_NAME, catalog_uuid, cdm_instances["controls_list"])
 
 
-async def persist_catalog(db: AsyncIOMotorDatabase, catalog_uuid: str, metadata: Metadata, controls: List[Control]) -> None:
-    """Persists the full extraction result: metadata + flat controls."""
+def load_cdm_instances(cdm_path: str) -> dict[str, CatalogModel | list[Any]]:
+    json_data, controls_list, catalog = [], [], None
+    
+    with open(cdm_path, "r", encoding="utf-8") as f:
+        json_data = json.load(f)
 
-    await persist_metadata(db, catalog_uuid, metadata)
-    await persist_controls(db, catalog_uuid, controls)
+    catalog = CatalogModel(**json_data["catalog"])
+    for control in json_data["controls_list"]:
+        controls_list.append(ControlModel(**control))
+
+    return { "catalog": catalog, "controls_list": controls_list }
