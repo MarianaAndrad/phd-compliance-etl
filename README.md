@@ -1,8 +1,22 @@
-# Compliance ETL 
+# Compliance ETL
 
-An ETL pipeline that turns compliance documents (ISO/IEC and NIST standards and frameworks, as PDFs) into structured, queryable data.
+**A deterministic ETL pipeline that turns cybersecurity standards and frameworks into structured, queryable control catalogs.**
 
-Each document is converted to Markdown, parsed into a common data model (a **catalog** and its **controls**), checked by an LLM judge against the source text, stored in MongoDB, and indexed in Elasticsearch for keyword and semantic search.
+Compliance ETL extracts the controls of normative documents (ISO/IEC and NIST standards and frameworks, distributed as PDF) together with their hierarchy, and maps them onto a common data model (CDM) inspired by the [NIST OSCAL](https://pages.nist.gov/OSCAL/) Catalog model. The resulting catalogs and controls are stored in MongoDB and can optionally be indexed in Elasticsearch for keyword, semantic, and hybrid search.
+
+This repository accompanies the paper *A Deterministic ETL Pipeline for Normative CDM Extraction* (see [Citation](#citation)).
+
+---
+
+## Why deterministic?
+
+Compliance decisions depend on the exact wording of each requirement, so an extraction step that omits, rewrites, or invents content is not acceptable. Compliance ETL therefore:
+
+- **Produces data only through explicit rules.** The document structure is rebuilt from low-level PDF primitives (text blocks, font sizes, and coordinates) with [PyMuPDF](https://github.com/pymupdf/PyMuPDF), and a rule-based state machine maps it onto the CDM. Running the pipeline twice on the same document and configuration yields identical output.
+- **Keeps every control traceable.** Each control has its official reference code, a unique slug, and a link to its parent, so the full hierarchy of the document is preserved.
+- **Uses an LLM only to review, never to write.** An optional validation step asks a local LLM judge (through [Ollama](https://ollama.com/)) whether each extracted control is faithful to its source text. The judge flags potential issues for human review and never modifies the data.
+
+## Pipeline
 
 ```
  PDF ──► extract ──► transform ──► validate ──► load ──► index
@@ -13,111 +27,95 @@ Each document is converted to Markdown, parsed into a common data model (a **cat
                     (.json)
 ```
 
-## Supported frameworks
+| Step | Module | What it does |
+|------|--------|--------------|
+| **Extract** | `extract_compoment.py` | Removes configured phrases and page margins (watermarks, headers, footers), then rebuilds the text block by block with PyMuPDF. Headings are detected from font size and layout, blocks split across pages or columns are merged, and tables are converted to Markdown. Writes `01-markdown/<name>.md` with the document metadata as front matter. |
+| **Transform** | `transform_compoment.py` | A deterministic, regex-driven state machine walks the Markdown between the framework's start and end markers, detects control headings and sections (description, purpose, guidance, other information), and builds the parent/child hierarchy from the reference codes. Writes `02-cdm-instances/<name>.json`. |
+| **Validate** *(optional)* | `validation_compoment.py` | Locates the source span of each control in the Markdown, checks `slug` and `parent_slug` deterministically, and asks the LLM judge (structured output, temperature 0) to look for hallucinated, missing, or misplaced content. Writes per-control verdicts (`pass` / `fail` / `error`) and a summary to `03-validation/<name>.json`. |
+| **Load** | `load_compoment.py` | Upserts the catalog (keyed by `metadata.name`) and its controls (keyed by `slug`) into MongoDB, so re-runs update entries instead of duplicating them. Skipped if MongoDB is unreachable. |
+| **Index** *(optional)* | `indexer.py` | Indexes the controls in Elasticsearch with an English analyzer on `title` and `description` and a 384-dimension `description_embedding` (`all-MiniLM-L6-v2`). Supports BM25, kNN, and hybrid retrieval through reciprocal rank fusion. |
 
-The transform step uses a per-framework parser (`G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS` in `src/components/transform_compoment.py`). Parsers exist for:
+Each step reads the previous step's output from `data-output/`, so any step can be re-run on its own.
 
-| Key              | Document                       |
-|------------------|--------------------------------|
-| `iso27001`       | ISO/IEC 27001                  |
-| `iso27002`       | ISO/IEC 27002                  |
-| `iso27005`       | ISO/IEC 27005                  |
-| `nistcsf`        | NIST Cybersecurity Framework   |
-| `nistsp800-53r5` | NIST SP 800-53 Rev. 5          |
+## Supported documents
 
-[//]: # (To support a new framework, add an entry to that dictionary &#40;see [Adding a framework]&#40;#adding-a-framework&#41;&#41;.)
+Parsers are defined per framework in `G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS` (`src/components/transform_compoment.py`).
 
-## Project structure
+| Key | Document | Controls extracted¹ |
+|-----|----------|--------------------:|
+| `iso27001` | ISO/IEC 27001:2022 | 41 |
+| `iso27002` | ISO/IEC 27002:2022 | 97 |
+| `iso27005` | ISO/IEC 27005:2022 | 56 |
+| `nistcsf` | NIST Cybersecurity Framework 2.0 | 134 |
+| `nistsp800-53r5` | NIST SP 800-53 Rev. 5 | 1209 |
 
-```
-compliance-etl/
-├── docker/                     # Infrastructure (MongoDB, Mongo Express, Elasticsearch, Kibana)
-│   ├── docker-compose.yaml
-│   ├── .env.example
-│   ├── mongodb.js              # Creates the app user and collections on first start
-│   └── kibana.yml
-└── src/
-    ├── main.py                 # Pipeline entry point
-    ├── metadata.json           # Per-framework settings (not committed, see below)
-    ├── core/config.py          # Settings loaded from .env
-    ├── dependencies/
-    │   ├── database.py         # MongoDB and Elasticsearch clients
-    │   └── llm.py              # Ollama chat model used by the validator
-    ├── components/
-    │   ├── extract_compoment.py     # PDF → Markdown (PyMuPDF), with redaction
-    │   ├── transform_compoment.py   # Markdown → catalog + controls (state machine parser)
-    │   ├── validation_compoment.py  # LLM-as-judge validation of each control
-    │   ├── load_compoment.py        # Upserts into MongoDB
-    │   └── indexer.py               # Elasticsearch indexing and hybrid search
-    ├── schemas/
-    │   ├── catalog.py          # CatalogModel, MetadataModel
-    │   ├── control.py          # ControlModel
-    │   └── extraction_schema.json
-    ├── data/                   # Input PDFs (not committed)
-    └── data-output/
-        ├── 01-markdown/
-        ├── 02-cdm-instances/
-        └── 03-validation/
-```
+¹ Counts reported in the paper. Grouping units (ISO/IEC 27002 themes, NIST CSF functions and categories, NIST SP 800-53 families) are represented as parent controls.
 
-## Requirements
+> **Licensed documents.** ISO/IEC standards are copyrighted and are **not** included in this repository. Obtain them from ISO or your national standards body and place them in `src/data/`. The Markdown, CDM, and validation files derived from licensed documents should not be redistributed either.
 
-- Python 3.13 and [uv](https://docs.astral.sh/uv/)
-- Docker and Docker Compose, for MongoDB and Elasticsearch
-- An [Ollama](https://ollama.com/) server, for the validation step (default model `qwen3.5:4b`)
+## Quick start
 
-The index step downloads the `all-MiniLM-L6-v2` sentence-transformers model on first run.
-
-## Setup
-
-### 1. Start the infrastructure
+**Requirements:** Python 3.13 and [uv](https://docs.astral.sh/uv/), Docker with Docker Compose (for MongoDB and Elasticsearch), and an [Ollama](https://ollama.com/) server if you want to run the validation step.
 
 ```bash
+# 1. Start MongoDB, Mongo Express, Elasticsearch and Kibana
 cd docker
-cp .env.example .env      # edit the passwords
+cp .env.example .env          # set your own passwords
 docker compose up -d
-```
 
-This starts:
-
-| Service        | URL                     | Notes                                               |
-|----------------|-------------------------|-----------------------------------------------------|
-| MongoDB        | `localhost:27017`       | `mongodb.js` creates the app user and collections   |
-| Mongo Express  | http://localhost:8081   | Log in with `DB_MONGO_USERNAME` / `DB_MONGO_PASSWORD` |
-| Elasticsearch  | http://localhost:9200   | Basic auth (`elastic` / `ES_PASSWORD`), no TLS      |
-| Kibana         | http://localhost:5601   | Log in with `elastic` / `ES_PASSWORD`               |
-
-### 2. Install the Python dependencies
-
-```bash
-cd src
+# 2. Install the Python dependencies
+cd ../src
 uv sync
+
+# 3. Configure the application
+cp .env.example .env          # credentials must match docker/.env
+#    then create metadata.json (see below) and put the PDFs in src/data/
+
+# 4. Pull the judge model (only needed for --validate)
+ollama pull qwen3.5:4b
+
+# 5. Run the whole pipeline
+uv run main.py
 ```
 
-### 3. Configure the application
+| Service | URL | Login |
+|---------|-----|-------|
+| MongoDB | `localhost:27017` | app user created by `docker/mongodb.js` |
+| Mongo Express | http://localhost:8081 | `DB_MONGO_USERNAME` / `DB_MONGO_PASSWORD` |
+| Elasticsearch | http://localhost:9200 | `elastic` / `ES_PASSWORD` (basic auth, no TLS) |
+| Kibana | http://localhost:5601 | `elastic` / `ES_PASSWORD` |
+
+## Usage
+
+Run from `src/`:
 
 ```bash
-cp .env.example .env
+uv run main.py              # run every step (same as --all)
+uv run main.py --extract    # run a single step
 ```
 
-| Variable                       | Default                   | Description                                   |
-|--------------------------------|---------------------------|-----------------------------------------------|
-| `LLM_BASE_URL`                 | `http://localhost:8000/`  | Ollama server URL                             |
-| `LLM_MODEL`                    | `qwen3.5:4b`              | Model used as the validation judge            |
-| `MONGO_HOST` / `MONGO_PORT`    | `localhost` / `27017`     | MongoDB location                              |
-| `DB_MONGO_USERNAME` / `DB_MONGO_PASSWORD` | —              | App user created by `docker/mongodb.js`       |
-| `DB_MONGO_NAME`                | `test`                    | Database name                                 |
-| `DATABASE_URI`                 | built from the above      | Overrides the MongoDB connection string       |
-| `DB_MONGO_CATALOG_COLLECTION`  | `catalogs`                | Collection for catalogs                       |
-| `DB_MONGO_CONTROL_COLLECTION`  | `controls`                | Collection for controls                       |
-| `ES_BASE_URL`                  | `http://localhost:9200`   | Elasticsearch URL                             |
-| `ES_USERNAME` / `ES_PASSWORD`  | —                         | Elasticsearch credentials                     |
+Available flags: `--all`, `--extract`, `--transform`, `--validate`, `--load`, `--index`. PDFs that do not match any entry in `metadata.json` are skipped.
 
-The MongoDB and Elasticsearch credentials must match `docker/.env`.
+## Configuration
 
-### 4. Create `metadata.json`
+### Environment variables (`src/.env`)
 
-`src/metadata.json` tells the pipeline which framework each PDF belongs to and how to clean it. It is gitignored because redaction phrases can contain licence text. Each top-level key is a framework:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_BASE_URL` | `http://localhost:8000/` | Ollama server URL (Ollama listens on `http://localhost:11434` by default) |
+| `LLM_MODEL` | `qwen3.5:4b` | Model used as the validation judge |
+| `MONGO_HOST` / `MONGO_PORT` | `localhost` / `27017` | MongoDB location |
+| `DB_MONGO_USERNAME` / `DB_MONGO_PASSWORD` | — | App user created by `docker/mongodb.js` |
+| `DB_MONGO_NAME` | `test` | Database name |
+| `DATABASE_URI` | built from the values above | Overrides the MongoDB connection string |
+| `DB_MONGO_CATALOG_COLLECTION` | `catalogs` | Collection for catalogs |
+| `DB_MONGO_CONTROL_COLLECTION` | `controls` | Collection for controls |
+| `ES_BASE_URL` | `http://localhost:9200` | Elasticsearch URL |
+| `ES_USERNAME` / `ES_PASSWORD` | — | Elasticsearch credentials |
+
+### Document metadata (`src/metadata.json`)
+
+`metadata.json` tells the pipeline which framework each PDF belongs to and how to clean it. It is gitignored because redaction phrases may contain licence text. Each top-level key is a framework:
 
 ```json
 {
@@ -139,81 +137,90 @@ The MongoDB and Elasticsearch credentials must match `docker/.env`.
 }
 ```
 
-- **`details.name`** must match a parser key in `transform_compoment.py`.
-- **`details.type`** is one of `standard`, `framework` or `directive`.
-- **`file_props.keywords`**: a PDF matches this framework when its file name contains every keyword (case-insensitive).
-- **`file_props.redact_phrases`**: text removed from every page before extraction, such as watermarks and copyright lines.
-- **`file_props.redact_margins`**: page bands removed as fractions of the page size (`top_y_end_percent`, `bottom_y_start_percent`, `left_x_end_percent`, `right_x_start_percent`), used to strip headers and footers.
-
-### 5. Add the documents
-
-Put the PDFs in `src/data/`.
-
-## Usage
-
-Run from `src/`:
-
-```bash
-uv run main.py            # run every step
-uv run main.py --extract  # run one step only
-```
-
-Available flags: `--all`, `--extract`, `--transform`, `--validate`, `--load`, `--index`.
-
-Each step reads the previous step's output from `data-output/`, so you can re-run one step without repeating the earlier ones. PDFs that match no entry in `metadata.json` are skipped.
-
-### Pipeline steps
-
-1. **Extract** (`extract_compoment.py`): applies the redactions, then rebuilds the text with PyMuPDF. It uses font size and layout to detect headings and merge blocks split across pages or columns. The output is written to `01-markdown/<name>.md`, with the PDF metadata as a front-matter header.
-2. **Transform** (`transform_compoment.py`): a deterministic, regex-driven state machine walks the Markdown between the framework's start and end markers. It detects control headings and sections (description, purpose, guidance, other information) and builds the parent/child hierarchy from reference codes. The output is written to `02-cdm-instances/<name>.json`.
-3. **Validate** (`validation_compoment.py`): for each control, finds its source span in the Markdown and asks an LLM judge (via Ollama, structured output) whether the extracted control is faithful. The judge looks for hallucinated, missing or misplaced content. `slug` and `parent_slug` are checked deterministically instead. The output is `03-validation/<name>.json`, holding per-control verdicts (`pass` / `fail` / `error`) and a summary with the pass rate.
-4. **Load** (`load_compoment.py`): upserts the catalog (keyed by `metadata.name`) and its controls (keyed by `slug`) into MongoDB, so re-runs do not create duplicates. The step is skipped if MongoDB is unreachable.
-5. **Index** (`indexer.py`): indexes the controls in Elasticsearch, with an English analyzer on `title` and `description` and a 384-dimension `description_embedding` vector. It supports BM25, kNN and hybrid retrieval through reciprocal rank fusion.
+| Field | Description |
+|-------|-------------|
+| `details.name` | Must match a parser key in `transform_compoment.py` |
+| `details.type` | `standard`, `framework`, or `directive` |
+| `file_props.keywords` | A PDF matches this entry when its file name contains every keyword (case-insensitive) |
+| `file_props.redact_phrases` | Text removed from every page before extraction, such as watermarks and copyright lines |
+| `file_props.redact_margins` | Page bands removed as fractions of the page size (`top_y_end_percent`, `bottom_y_start_percent`, `left_x_end_percent`, `right_x_start_percent`), used to strip headers and footers |
 
 ## Data model
 
-The pipeline outputs a common data model defined with Pydantic in `src/schemas/`.
+The CDM is defined with Pydantic in `src/schemas/` and keeps the subset of the OSCAL Catalog model needed to represent normative documents. The transform step writes one catalog and a flat list of controls (`controls_list`); the hierarchy is given by `parent_slug`.
 
-**Catalog**: one per document.
+**Catalog** (one per document)
 
-| Field      | Description                                                                 |
-|------------|-----------------------------------------------------------------------------|
-| `uuid`     | Catalog identifier                                                          |
-| `metadata` | `type`, `name`, `version`, `language`, `published`, `last-modified`, `publisher`, `description` |
+| Field | Description | Closest OSCAL construct |
+|-------|-------------|-------------------------|
+| `uuid` | Catalog identifier | `uuid` |
+| `metadata` | `type`, `name`, `version`, `language`, `published`, `last-modified`, `publisher`, `description` | `metadata` |
 
-**Control**: one per requirement or clause.
+**Control** (one per control, clause, or grouping unit)
 
-| Field                  | Description                                              |
-|------------------------|----------------------------------------------------------|
-| `catalog_uuid`         | Owning catalog                                           |
-| `ref_code`             | Official code, e.g. `8.13`, `AC-2`, `GV.OC-01`           |
-| `title`                | Control name                                             |
-| `slug`                 | Unique identifier, e.g. `8.13-information-backup`        |
-| `parent_slug`          | Parent control's slug (`null` for top-level controls)    |
-| `category`             | Usually the title of the root parent                     |
-| `description`, `purpose`, `guidance`, `other_information` | Text sections from the source |
-| `means_of_verifiction` | Ways to audit the control (not extracted yet)            |
-| `attributes`           | Tag-like key → values list                               |
-| `references`, `citers` | Cross-references (not extracted yet)                     |
+| Field | Description | Closest OSCAL construct |
+|-------|-------------|-------------------------|
+| `catalog_uuid` | Owning catalog | implicit (containment) |
+| `ref_code` | Official code, e.g. `8.13`, `AC-2`, `GV.OC-01` | `prop` (label) |
+| `title` | Control name | `title` |
+| `slug` | Unique identifier, e.g. `8.13-information-backup` | `id` |
+| `parent_slug` | Parent control's slug (`null` at the top level) | implicit (nesting) |
+| `category` | Usually the title of the root parent | `prop` or `group` |
+| `description` | Normative statement | `part` (statement) |
+| `purpose` | Purpose of the control | `part` (custom name) |
+| `guidance` | Implementation guidance | `part` (guidance) |
+| `other_information` | Supplementary information | `part` (custom name) |
+| `means_of_verifiction` | Ways to audit the control *(not extracted yet)* | `part` (assessment-method) |
+| `attributes` | Tag-like key → list of values | `props` |
+| `references`, `citers` | Cross-references *(not extracted yet)* | `links` |
 
-See `src/schemas/example.json` for a full example.
+See [`src/schemas/example.json`](src/schemas/example.json) for an example.
 
-[//]: # ()
-[//]: # (## Adding a framework)
+## Project structure
 
-[//]: # ()
-[//]: # (1. Add an entry to `G_FRAMEWORKS_SEQUENCE_STATE_CONDITIONS` in `src/components/transform_compoment.py`. Each entry defines:)
+```
+compliance-etl/
+├── docker/                          # MongoDB, Mongo Express, Elasticsearch, Kibana
+│   ├── docker-compose.yaml
+│   ├── .env.example
+│   ├── mongodb.js                   # creates the app user and collections on first start
+│   └── kibana.yml
+└── src/
+    ├── main.py                      # pipeline entry point
+    ├── metadata.json                # per-framework settings (not committed)
+    ├── core/config.py               # settings loaded from .env
+    ├── dependencies/
+    │   ├── database.py              # MongoDB and Elasticsearch clients
+    │   └── llm.py                   # Ollama chat model used by the judge
+    ├── components/
+    │   ├── extract_compoment.py     # PDF → Markdown (PyMuPDF)
+    │   ├── transform_compoment.py   # Markdown → catalog + controls (state machine)
+    │   ├── validation_compoment.py  # LLM-as-a-judge validation
+    │   ├── load_compoment.py        # upserts into MongoDB
+    │   └── indexer.py               # Elasticsearch indexing and hybrid search
+    ├── schemas/
+    │   ├── catalog.py               # CatalogModel, MetadataModel
+    │   ├── control.py               # ControlModel
+    │   └── example.json
+    ├── data/                        # input PDFs (not committed)
+    └── data-output/
+        ├── 01-markdown/
+        ├── 02-cdm-instances/
+        └── 03-validation/
+```
 
-[//]: # (   - `doc_start_controls` / `doc_end_controls`: line predicates marking the controls section.)
+## Citation
 
-[//]: # (   - `new_control`: detects a control heading.)
+If you use this work, please cite:
 
-[//]: # (   - `control_description`, `control_purpose`, `control_guidance`, `control_other_information`, `control_means_of_verification`, `control_attributes`: section-header predicates that return `{"val": ..., "skip_line": ...}`.)
+```bibtex
+...
+```
 
-[//]: # (   - `construct_control`: derives `ref_code`, `title` and `slug` from a heading line.)
+## Acknowledgements
 
-[//]: # (   - `control_levels` &#40;optional&#41;: regexes for hierarchy levels, for when the number of `.` delimiters in the code is not enough.)
+This work was developed at the Institute of Electronics and Informatics Engineering of Aveiro (IEETA), University of Aveiro. It was supported by the Foundation for Science and Technology (FCT) through contract [UID/00127/2025](https://doi.org/10.54499/UID/00127/2025) and grant 2025.05427.BDANA, and by the CIBERRAIA project, co-funded by the European Union through the Interreg Spain-Portugal Programme (POCTEP) 2021-2027.
 
-[//]: # (2. Add a matching entry to `metadata.json` with the file keywords and redaction settings.)
+## License
 
-[//]: # (3. Run `--extract` and `--transform`, inspect the output, then run `--validate` to measure extraction quality.)
+*To be defined.* Note that PyMuPDF is distributed under the AGPL-3.0 (or a commercial licence), which should be taken into account when choosing the licence of this project.
